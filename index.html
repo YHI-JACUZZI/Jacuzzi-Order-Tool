@@ -130,6 +130,19 @@ table.models td.qty,table.models th.qty{text-align:right; white-space:nowrap}
 table.models td.cost,table.models th.cost{text-align:right; white-space:nowrap; color:var(--ink-soft)}
 table.models tr.nomatch td{background:var(--err-soft)}
 table.models tr.nomatch td.model{color:var(--err); font-weight:600}
+table.models tr.qty-overridden td{background:var(--warn-soft)}
+.qty-input{
+  width:56px; text-align:right; font:inherit; font-variant-numeric:tabular-nums;
+  padding:4px 6px; border:1px solid var(--line-strong); border-radius:6px; background:var(--panel);
+}
+.qty-input:focus{outline:2px solid var(--accent); outline-offset:1px; border-color:var(--accent)}
+tr.qty-overridden .qty-input{border-color:var(--warn); background:#fffaf0}
+.qty-note{font-size:10.5px; color:var(--warn); margin-top:3px; text-align:right; white-space:nowrap}
+.qty-reset{
+  margin-left:4px; border:none; background:none; color:var(--warn); cursor:pointer;
+  font-size:12px; padding:0 2px; line-height:1; vertical-align:middle;
+}
+.qty-reset:hover{color:var(--accent-dark)}
 .src{font-size:11px; color:#93a0ac}
 .empty-state{padding:22px 16px; text-align:center; color:var(--ink-soft)}
 .issues{margin:0; padding:0; list-style:none}
@@ -149,6 +162,7 @@ table.models tr.nomatch td.model{color:var(--err); font-weight:600}
     <div class="header-actions">
       <button type="button" id="btn-export-docx" class="primary">Export Cut Sheet (Word)</button>
       <button type="button" id="btn-export-csv" class="primary">Export Model List (CSV)</button>
+      <button type="button" id="btn-reset-qty">Reset quantities</button>
       <button type="button" id="btn-reset">Reset form</button>
     </div>
   </div>
@@ -174,6 +188,7 @@ table.models tr.nomatch td.model{color:var(--err); font-weight:600}
           <div>Distinct SKUs<b id="sum-skus">0</b></div>
           <div>Total qty<b id="sum-qty">0</b></div>
           <div>Est. cost<b id="sum-cost">—</b></div>
+          <div id="sum-adjusted-wrap" style="display:none">Qty adjusted<b id="sum-adjusted">0</b></div>
         </div>
         <div id="issues-box" style="padding:12px 16px 0"></div>
         <div id="results-box"></div>
@@ -2402,6 +2417,32 @@ const job = {};                                     // { customer, job, date, st
 const els = {};                                     // { "B6": {wrap,input,note,...} }
 let lastOutput = null;
 
+/* Manual quantity overrides, keyed by Model Number (SKU). Layered on top of
+ * computeOutput()'s calculated quantities so the engine itself stays a pure
+ * translation of the Excel logic — overrides are purely a UI/export concern.
+ * Kept keyed by SKU (not row index) so an override "sticks" to that product:
+ * if you change an unrelated selection, quantities you've already adjusted
+ * don't get silently reset. If the SKU disappears entirely from the results
+ * (a selection change swaps it out), the stale override is simply unused. */
+const qtyOverrides = new Map();
+
+/** Mutates out.rows in place: applies any manual override, and records the
+ *  Excel-calculated value as r.calculatedQty so the UI can show "(calc: N)"
+ *  and offer a per-row reset. Always call this instead of using
+ *  computeOutput()'s return value directly for rendering or export. */
+function applyQtyOverrides(out){
+  for (const r of out.rows){
+    r.calculatedQty = r.qty;
+    if (qtyOverrides.has(r.model)){
+      r.qty = qtyOverrides.get(r.model);
+      r.overridden = true;
+    } else {
+      r.overridden = false;
+    }
+  }
+  return out;
+}
+
 function el(tag, cls, text){
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -2529,7 +2570,7 @@ function refresh(){
     E.wrap.classList.toggle("invalid", !!vmsg);
   }
 
-  lastOutput = computeOutput(state);
+  lastOutput = applyQtyOverrides(computeOutput(state));
   renderResults(lastOutput);
 }
 
@@ -2546,6 +2587,44 @@ function notApplicableMessage(f, s){
     case "B44": return "Choose Grab Bar 2 Style first.";
     default:    return "Not applicable for this configuration.";
   }
+}
+
+/** Builds the editable Qty <td> for one results row. Uses a "change" listener
+ *  (fires on blur / Enter, not every keystroke) rather than "input", so the
+ *  table can safely rebuild on every edit without booting focus mid-type —
+ *  same reasoning as the "no live rebuild while typing" rule used for the
+ *  Selection Sheet form fields, just solved the simpler way since this table
+ *  is small and quantity edits are infrequent one-off keystrokes. */
+function qtyCell(r){
+  const td = el("td", "qty");
+
+  const input = document.createElement("input");
+  input.type = "number"; input.min = "0"; input.step = "1";
+  input.className = "qty-input";
+  input.value = r.qty === null ? "" : String(r.qty);
+  input.placeholder = "0";
+  input.title = "Adjust quantity before export";
+  input.addEventListener("change", function(){
+    const raw = input.value.trim();
+    if (raw === ""){ qtyOverrides.delete(r.model); refresh(); return; }
+    const n = Math.round(Number(raw));
+    if (!isFinite(n) || n < 0){ input.value = r.qty === null ? "" : String(r.qty); return; }
+    qtyOverrides.set(r.model, n);
+    refresh();
+  });
+  input.addEventListener("keydown", function(ev){ if (ev.key === "Enter") input.blur(); });
+  td.appendChild(input);
+
+  if (r.overridden){
+    const note = el("div", "qty-note", "calc: " + (r.calculatedQty === null ? "—" : r.calculatedQty));
+    const reset = document.createElement("button");
+    reset.type = "button"; reset.className = "qty-reset"; reset.textContent = "↺";
+    reset.title = "Reset to calculated quantity";
+    reset.addEventListener("click", function(){ qtyOverrides.delete(r.model); refresh(); });
+    note.appendChild(reset);
+    td.appendChild(note);
+  }
+  return td;
 }
 
 function renderResults(out){
@@ -2574,7 +2653,7 @@ function renderResults(out){
 
     const tb = el("tbody");
     for (const r of out.rows){
-      const tr = el("tr", r.noMatch ? "nomatch" : null);
+      const tr = el("tr", (r.noMatch ? "nomatch" : "") + (r.overridden ? " qty-overridden" : ""));
       tr.appendChild(el("td", "model", r.model));
 
       const dcell = el("td");
@@ -2585,7 +2664,7 @@ function renderResults(out){
       dcell.appendChild(src);
       tr.appendChild(dcell);
 
-      tr.appendChild(el("td", "qty", r.qty === null ? "—" : String(r.qty)));
+      tr.appendChild(qtyCell(r));
       const unit = (r.item && typeof r.item.c === "number") ? r.item.c : null;
       tr.appendChild(el("td", "cost", unit === null ? "" : money(unit)));
       tb.appendChild(tr);
@@ -2604,6 +2683,10 @@ function renderResults(out){
   document.getElementById("sum-skus").textContent  = String(out.rows.length);
   document.getElementById("sum-qty").textContent   = String(totalQty);
   document.getElementById("sum-cost").textContent  = haveCost ? money(cost) : "—";
+
+  const adjustedCount = out.rows.filter(r => r.overridden).length;
+  document.getElementById("sum-adjusted-wrap").style.display = adjustedCount ? "" : "none";
+  document.getElementById("sum-adjusted").textContent = String(adjustedCount);
 }
 
 function money(n){ return "$" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
@@ -2628,7 +2711,7 @@ function money(n){ return "$" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",
    ------------------------------------------------------------------------ */
 
 function exportSnapshot(){
-  const out = lastOutput || computeOutput(state);
+  const out = lastOutput || applyQtyOverrides(computeOutput(state));
 
   // Job reference header, in the order the form shows it.
   const jobInfo = JOB_FIELDS.map(f => ({ label:f.label, value: raw(job[f.key]).trim() }));
@@ -3053,6 +3136,7 @@ function exportCutSheetDocx(){
 function resetForm(){
   for (const k of Object.keys(state)) delete state[k];
   for (const f of FIELDS){ const E = els[f.cell]; if (E){ E.optionsKey = null; E.input.value = ""; } }
+  qtyOverrides.clear();
   refresh();
 }
 
@@ -3062,6 +3146,11 @@ document.addEventListener("DOMContentLoaded", function(){
   refresh();
   document.getElementById("btn-export-docx").addEventListener("click", exportCutSheetDocx);
   document.getElementById("btn-export-csv").addEventListener("click", exportModelListCsv);
+  document.getElementById("btn-reset-qty").addEventListener("click", function(){
+    if (qtyOverrides.size === 0) return;
+    qtyOverrides.clear();
+    refresh();
+  });
   document.getElementById("btn-reset").addEventListener("click", function(){
     if (confirm("Clear all configurator selections? (Job reference fields are kept.)")) resetForm();
   });
@@ -3071,7 +3160,8 @@ document.addEventListener("DOMContentLoaded", function(){
 if (typeof module !== "undefined" && module.exports){
   module.exports = { CONFIG, CATALOG, computeOutput, computeHelpers, FIELDS, LINE_ITEMS,
                      doorRodOptions, seatTopOptions, panDimensionOptions,
-                     zipStore, crc32, buildCutSheetXml, buildCutSheetDocx, buildModelListCsv };
+                     zipStore, crc32, buildCutSheetXml, buildCutSheetDocx, buildModelListCsv,
+                     applyQtyOverrides, qtyOverrides };
 }
 </script>
 </body>
