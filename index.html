@@ -110,6 +110,12 @@ button{
 button:hover{background:#f4f7fa}
 button.primary{background:var(--accent); border-color:var(--accent); color:#fff}
 button.primary:hover{background:var(--accent-dark)}
+.btn-link{
+  font:inherit; font-weight:550; border-radius:6px; padding:8px 14px; cursor:pointer;
+  border:1px solid var(--line-strong); background:#fff; color:var(--ink);
+  text-decoration:none; display:inline-flex; align-items:center;
+}
+.btn-link:hover{background:#f4f7fa}
 
 /* ============================== RESULTS ================================ */
 /* The output panel follows the user down the (long) form and scrolls internally. */
@@ -160,6 +166,7 @@ tr.qty-overridden .qty-input{border-color:var(--warn); background:#fffaf0}
     <div class="brand">Bath Remodel Order Configurator
       <small>Excel replica &middot; Selection Sheet &rarr; Model Numbers Output</small></div>
     <div class="header-actions">
+      <a href="history.html" id="link-history" target="_blank" rel="noopener" class="btn-link">View order history</a>
       <button type="button" id="btn-export-docx" class="primary">Export Cut Sheet (Word)</button>
       <button type="button" id="btn-export-csv" class="primary">Export Model List (CSV)</button>
       <button type="button" id="btn-reset-qty">Reset quantities</button>
@@ -496,6 +503,12 @@ const CONFIG = {
     {
       "option": "N/A",
       "prefix": ""
+    }
+  ],
+  "soapDishPrefix": [
+    {
+      "option": "Tigris Soap Dish",
+      "prefix": "SD-FLM-"
     }
   ],
   "siliconeTable": [
@@ -1928,7 +1941,13 @@ const FIELDS = [
   { cell:"B14", section:"WALL", label:"Surround Height", type:"number",
     hint:"96\" or less → 97\" Signature panels / 96\" Lifestyle panels; over 96\" → 108\" Lifestyle panels." },
   { cell:"B15", section:"WALL", label:"Inside Corner Trim", type:"text", unused:true },
-  { cell:"B16", section:"WALL", label:"Perimeter Edge Trim", type:"text", unused:true },
+  /* B16 (added 2026-08): Signature-only Yes/N/A toggle for an optional CT-175
+   * perimeter edge trim piece — see G22 in SECTION G. No C-column check formula
+   * exists for this field in the Excel, so there's no `validate` here either;
+   * the generic "not applicable" greying-out still applies via `options`. */
+  { cell:"B16", section:"WALL", label:"Perimeter Edge Trim", type:"select",
+    options: s => EQ(s.B7,"Signature") ? ["Yes","N/A"] : CONFIG.E_patternLifestyle,
+    hint:"Signature only. \"Yes\" adds a CT-175 perimeter trim piece in the Back Wall Color." },
   { cell:"B17", section:"WALL", label:"T Trim", type:"text", unused:true },
   { cell:"B18", section:"WALL", label:"Lifestyle wall Trim Color", type:"select",
     options: s => EQ(s.B7,"Lifestyle") ? CONFIG.AH_trimColors : CONFIG.E_patternLifestyle,
@@ -2064,7 +2083,24 @@ const FIELDS = [
       : "Back Wall Color \"" + TRIM(s.B10) + "\" has no silicone colour mapping." },
   { cell:"B51", section:"ACCESSORIES", label:"Silicone Clear", type:"select",
     options: () => ["Yes","No"],
-    hint:"Adds SP-SLN-CLR. (No dropdown exists in the Excel; the formula only tests for \"Yes\".)" }
+    hint:"Adds SP-SLN-CLR. (No dropdown exists in the Excel; the formula only tests for \"Yes\".)" },
+  /* B52/B53 (added 2026-08): Signature-only Tigris Soap Dish + colour. Distinct
+   * from the old, still-unused B49 "Soap Dish" free-text row above — see G30
+   * in SECTION G for the model number this feeds. */
+  { cell:"B52", section:"ACCESSORIES", label:"Soap Dish", type:"select",
+    options: s => EQ(s.B7,"Signature") ? ["Tigris Soap Dish","N/A"] : ["N/A"],
+    // C52
+    validate: s => raw(s.B52) === "" ? null
+      : ((EQ(s.B7,"Signature") && INLIST(["Tigris Soap Dish","N/A"], s.B52)) ||
+         (!EQ(s.B7,"Signature") && EQ(s.B52,"N/A"))) ? null
+      : "Soap dish is only available on Signature wall systems. Choose N/A." },
+  { cell:"B53", section:"ACCESSORIES", label:"Soap Dish Color", type:"select",
+    options: s => EQ(s.B52,"Tigris Soap Dish") ? CONFIG.Z_sigWallColors : ["N/A"],
+    // C53
+    validate: s => raw(s.B53) === "" ? null
+      : ((EQ(s.B52,"Tigris Soap Dish") && INLIST(CONFIG.Z_sigWallColors, s.B53)) ||
+         (!EQ(s.B52,"Tigris Soap Dish") && EQ(s.B53,"N/A"))) ? null
+      : "Pick a Signature color code, or N/A if no soap dish is selected." }
 ];
 
 /* Job / customer reference fields — not part of the Excel logic. */
@@ -2074,6 +2110,50 @@ const JOB_FIELDS = [
   { key:"date",     label:"Date", type:"date" },
   { key:"staff",    label:"Staff name" }
 ];
+
+/* ==========================================================================
+   SECTION F.1 — SHARED ORDER HISTORY
+   Every export (CSV or Word) is best-effort logged to a small Google Sheets
+   "backend" (a Google Apps Script Web App bound to a Sheet — the simplest
+   free way to get a shared, cross-device data store out of a plain static
+   site with no server of its own). history.html reads the same endpoint to
+   list past exports for the whole team.
+
+   HISTORY_ENDPOINT is intentionally blank until that Apps Script is deployed
+   — see history-backend.gs and SETUP.md shipped alongside this file. Until
+   it's filled in, logging is a silent no-op and history.html shows a setup
+   notice instead of erroring.
+   ========================================================================== */
+const HISTORY_ENDPOINT = ""; // <-- paste the deployed Apps Script Web App URL here
+
+/** Fire-and-forget: never throws, never blocks or delays an export. Uses
+ *  mode:"no-cors" (we don't need to read the response) with a text/plain
+ *  body, which keeps this a CORS "simple request" — Apps Script doPost()
+ *  still reads it fine via e.postData.contents regardless of the declared
+ *  content type. */
+function logExportToHistory(snap, exportType){
+  if (!HISTORY_ENDPOINT) return;
+  try {
+    const payload = {
+      ts: new Date().toISOString(),
+      exportType: exportType,                 // "csv" | "docx"
+      customer: raw(job.customer).trim(), job: raw(job.job).trim(),
+      date: raw(job.date).trim(), staff: raw(job.staff).trim(),
+      totalQty: snap.totalQty,
+      totalCost: snap.haveCost ? snap.cost : null,
+      rows: snap.rows.map(r => ({
+        model: r.model, qty: r.qty,
+        description: r.item ? r.item.d : (r.constructed ? "(constructed)" : ""),
+        unitCost: (r.item && typeof r.item.c === "number") ? r.item.c : null
+      }))
+    };
+    fetch(HISTORY_ENDPOINT, {
+      method: "POST", mode: "no-cors",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload)
+    }).catch(function(){ /* offline / blocked — the export itself already succeeded */ });
+  } catch (e) { /* never let logging break a real export */ }
+}
 
 /* ==========================================================================
    SECTION G — LINE ITEMS (Selection Sheet columns F / G / I)
@@ -2252,9 +2332,16 @@ const LINE_ITEMS = [
       return BLANK;
     } },
 
-  /* --- G22 : Perimeter Edge Trim ------------------------------------------ */
+  /* --- G22 : Perimeter Edge Trim -------------------------------------------
+     Added 2026-08: Signature now has its own optional trim piece, gated by
+     the B16 Yes/N/A toggle — exact match "CT-175-<Back Wall Color>". The
+     original Lifestyle behaviour (unconditional on B18) is unchanged. */
   { row:22, label:"Perimeter Edge Trim", qty:() => 4,
     models(s){
+      if (EQ(s.B7,"Signature")){
+        if (TRIM(s.B16) !== "Yes" || TRIM(s.B10) === "") return BLANK;
+        return FILTER_CATALOG(it => EQ(TRIM(it.m), "CT-175-" + TRIM(s.B10)));
+      }
       if (TRIM(s.B7) !== "Lifestyle" || TRIM(s.B18) === "" || TRIM(s.B18) === "N/A") return BLANK;
       return FILTER_CATALOG(it => SEARCH("PX96E" + TRIM(s.B18), it.m));
     } },
@@ -2303,6 +2390,20 @@ const LINE_ITEMS = [
       return FILTER_CATALOG(it => SEARCH("Diverter Trims; " + TRIM(s.B33), it.g) &&
                                   SEARCH("DIVERT3", it.m) &&
                                   SEARCH("-" + TRIM(s.B34), it.m));
+    } },
+
+  /* --- G30 : Soap Dish (added 2026-08) --------------------------------------
+     Signature-only Tigris Soap Dish. Model prefix comes from a one-row
+     lookup table (only "Tigris Soap Dish" has a prefix today — "SD-FLM-")
+     so this is written the same shape as the Excel's INDEX/MATCH rather than
+     hardcoding the single case, in case more soap dish styles get added
+     later the same way grab bars / shelves already work. */
+  { row:30, label:"Soap Dish", qty:(s, h, res) => res.models.length ? 1 : null,
+    models(s){
+      if (TRIM(s.B52) === "" || TRIM(s.B52) === "N/A" || TRIM(s.B53) === "" || TRIM(s.B53) === "N/A") return BLANK;
+      const prefix = LOOKUP(CONFIG.soapDishPrefix, "option", TRIM(s.B52), "prefix");
+      if (prefix === "") return BLANK;
+      return FILTER_CATALOG(it => EQ(TRIM(it.m), prefix + TRIM(s.B53)));
     } },
 
   /* --- G39 : CWS (silicone sausage pack) ----------------------------------- */
@@ -2789,6 +2890,7 @@ function exportModelListCsv(){
   const csv = "﻿" + buildModelListCsv(snap);          // UTF-8 BOM for Excel
   downloadBlob(new Blob([csv], { type:"text/csv;charset=utf-8;" }),
                exportFileName("Model Numbers", snap, "csv"));
+  logExportToHistory(snap, "csv");
 }
 
 /* ------------------------------------------------------------------------
@@ -3127,6 +3229,7 @@ function exportCutSheetDocx(){
   downloadBlob(new Blob([bytes], {
     type:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   }), exportFileName("Cut Sheet", snap, "docx"));
+  logExportToHistory(snap, "docx");
 }
 
 /* ==========================================================================
