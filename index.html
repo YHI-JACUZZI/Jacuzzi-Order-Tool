@@ -99,6 +99,8 @@ header.app{
 .note.err{color:var(--err); background:var(--err-soft); border-left:3px solid var(--err); padding:4px 8px; border-radius:0 4px 4px 0}
 .note.warn{color:var(--warn); background:var(--warn-soft); border-left:3px solid var(--warn); padding:4px 8px; border-radius:0 4px 4px 0}
 .field.invalid input,.field.invalid select{border-color:var(--err)}
+.job-grid .job-field.invalid input{border-color:var(--err)}
+.job-grid label .req{color:var(--err)}
 .field.na label{color:#93a0ac}
 .reference-only{font-size:11px; color:#93a0ac; font-style:italic}
 
@@ -2103,12 +2105,13 @@ const FIELDS = [
       : "Pick a Signature color code, or N/A if no soap dish is selected." }
 ];
 
-/* Job / customer reference fields — not part of the Excel logic. */
+/* Job / customer reference fields — not part of the Excel logic. All four
+ * are required before either export can run (2026-08 request). */
 const JOB_FIELDS = [
-  { key:"customer", label:"Customer name" },
-  { key:"job",      label:"Job name / number" },
-  { key:"date",     label:"Date", type:"date" },
-  { key:"staff",    label:"Staff name" }
+  { key:"customer", label:"Customer name", required:true },
+  { key:"job",      label:"Contract number", required:true },
+  { key:"date",     label:"Date", type:"date", required:true },
+  { key:"staff",    label:"Staff name", required:true }
 ];
 
 /* ==========================================================================
@@ -2552,23 +2555,76 @@ function el(tag, cls, text){
 }
 
 /* --------------------------------------------------------- job header --- */
+let jobExportAttempted = false;    // set true on the first blocked export click
+
 function buildJobFields(){
   const grid = document.getElementById("job-grid");
   for (const f of JOB_FIELDS){
-    const box = el("div");
-    const lab = el("label", null, f.label);
+    const box = el("div", "job-field");
+    const lab = el("label");
+    lab.appendChild(document.createTextNode(f.label));
+    if (f.required) lab.appendChild(el("span", "req", " *"));
     const inp = el("input");
     inp.type = f.type || "text";
     inp.id = "job-" + f.key;
-    inp.addEventListener("input", () => { job[f.key] = inp.value; });
-    box.appendChild(lab); box.appendChild(inp);
+    inp.addEventListener("input", () => { job[f.key] = inp.value; refreshJobValidation(); });
+    inp.addEventListener("blur", () => { inp.dataset.touched = "1"; refreshJobValidation(); });
+    const note = el("div", "note");
+    note.style.display = "none";
+    box.appendChild(lab); box.appendChild(inp); box.appendChild(note);
     grid.appendChild(box);
     els["job-" + f.key] = inp;
+    els["job-" + f.key + "-box"] = box;
+    els["job-" + f.key + "-note"] = note;
   }
   // Default the date to today for convenience.
   const d = new Date();
   const iso = d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
   els["job-date"].value = iso; job.date = iso;
+}
+
+/** True when a required job field is currently blank. */
+function jobFieldMissing(f){
+  return !!f.required && raw(job[f.key]).trim() === "";
+}
+
+/** Re-decorates the job header inputs. A field is only shown red/flagged
+ *  once the user has left it blank (blur) or an export was attempted while
+ *  it was blank — so the form doesn't look like an error page on first
+ *  load. Always returns the current list of missing required labels. */
+function refreshJobValidation(){
+  const missing = [];
+  for (const f of JOB_FIELDS){
+    const bad = jobFieldMissing(f);
+    if (bad) missing.push(f.label);
+    const box = els["job-" + f.key + "-box"];
+    const note = els["job-" + f.key + "-note"];
+    const inp = els["job-" + f.key];
+    const show = bad && (jobExportAttempted || inp.dataset.touched === "1");
+    if (box) box.classList.toggle("invalid", show);
+    if (note){
+      note.className = "note" + (show ? " err" : "");
+      note.textContent = show ? "Required before export." : "";
+      note.style.display = show ? "" : "none";
+    }
+  }
+  return missing;
+}
+
+/** Gate for both export buttons: marks every blank required field, shows a
+ *  single summary alert naming what's missing, and focuses the first one.
+ *  Returns true only when the job header is complete. */
+function requireJobFields(){
+  jobExportAttempted = true;
+  const missing = refreshJobValidation();
+  if (missing.length){
+    alert("Please fill in the required field" + (missing.length > 1 ? "s" : "") +
+          " before exporting: " + missing.join(", ") + ".");
+    const firstBad = JOB_FIELDS.find(f => jobFieldMissing(f));
+    if (firstBad) els["job-" + firstBad.key].focus();
+    return false;
+  }
+  return true;
 }
 
 /* ------------------------------------------------------- form section --- */
@@ -2886,6 +2942,7 @@ function buildModelListCsv(snap){
 }
 
 function exportModelListCsv(){
+  if (!requireJobFields()) return;
   const snap = exportSnapshot();
   const csv = "﻿" + buildModelListCsv(snap);          // UTF-8 BOM for Excel
   downloadBlob(new Blob([csv], { type:"text/csv;charset=utf-8;" }),
@@ -3224,6 +3281,7 @@ function buildCutSheetDocx(snap){
 }
 
 function exportCutSheetDocx(){
+  if (!requireJobFields()) return;
   const snap = exportSnapshot();
   const bytes = buildCutSheetDocx(snap);
   downloadBlob(new Blob([bytes], {
