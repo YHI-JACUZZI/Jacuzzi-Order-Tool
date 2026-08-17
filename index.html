@@ -507,12 +507,6 @@ const CONFIG = {
       "prefix": ""
     }
   ],
-  "soapDishPrefix": [
-    {
-      "option": "Tigris Soap Dish",
-      "prefix": "SD-FLM-"
-    }
-  ],
   "siliconeTable": [
     {
       "code": "AW",
@@ -579,6 +573,26 @@ const CONFIG = {
       "name": "Windstorm Marble",
       "silicone": "Alabaster White (AW)"
     }
+  ],
+  "soapDishPrefix": [
+    {
+      "option": "Tigris Soap Dish",
+      "prefix": "SD-FLM-"
+    }
+  ],
+  "grabShelfSizePrefix": [
+    {
+      "option": "20in Grab Shelf",
+      "prefix": "PP588"
+    },
+    {
+      "option": "30in Grab Bar Shelf",
+      "prefix": "PP578"
+    }
+  ],
+  "BP_grabShelfSizes": [
+    "20in Grab Shelf",
+    "30in Grab Bar Shelf"
   ]
 };
 
@@ -917,7 +931,7 @@ const CATALOG = [
 {"g": "Shower Pans; Signature Shower Pans; Built In Seat Shower Pans", "m": "SR-BISS32R-QT", "d": "QT 60 L x 32 W RH Signature Built-in Seated Shower Pan", "len": 60, "w": 32, "c": 706.65},
 {"g": "Shower Pans; Signature Shower Pans; Built In Seat Shower Pans", "m": "SR-BISS32R-SB", "d": "SB 60 L x 32 W RH Signature Built-in Seated Shower Pan", "len": 60, "w": 32, "c": 706.65},
 {"g": "Shower Pans; Signature Shower Pans; Built In Seat Shower Pans", "m": "SR-BISS30L-QT", "d": "QT 60 L x 30 W LH Signature Built-in Seated Shower Pan", "len": 60, "w": 30, "c": 706.65},
-{"g": "Shower Pans; Signature Shower Pans; Built In Seat Shower Pans", "m": "SR-BISS30L-PG", "d": "PG 60 L x 30 W LH Signature Built-in Seated Shower Pan", "len": 60, "w": 30, "c": 706.65},
+{"g": "Shower Pans; Signature Shower Pans; Built In Seat Shower Pans", "m": "SR-BISS32L-PG", "d": "PG 60 L x 30 W LH Signature Built-in Seated Shower Pan", "len": 60, "w": 30, "c": 706.65},
 {"g": "Shower Pans; Signature Shower Pans; Barrier Free Shower Pans", "m": "SR-BF32C-AW", "d": "SR-BF32C-AW", "len": null, "w": null, "c": 551.25},
 {"g": "Shower Pans; Signature Shower Pans; Barrier Free Shower Pans", "m": "SR-BF32C-PG", "d": "PG 60 L x 32 W C Signature Barrier Free Shower Pan", "len": 60, "w": 32, "c": 551.25},
 {"g": "Shower Pans; Signature Shower Pans; Barrier Free Shower Pans", "m": "SR-BF32C-QT", "d": "QT 60 L x 32 W C Signature Barrier Free Shower Pan", "len": 60, "w": 32, "c": 551.25},
@@ -1395,6 +1409,7 @@ const CATALOG = [
 {"g": "Walls Panels; Walls Panels; Wall Flats / Soap Dish Walls; Smooth; Quarry Topaz", "m": "WF-4097-QT", "d": "QT 40 x 97 Flat Wall", "len": 40, "w": null, "c": 135.45},
 {"g": "Walls Panels; Walls Panels; Wall Flats / Soap Dish Walls; Smooth; Quarry Topaz", "m": "WF-4065-QT", "d": "QT 40 x 65 Flat Wall", "len": 40, "w": null, "c": 109.2},
 {"g": "Walls Panels; Walls Panels; Wall Flats / Soap Dish Walls; Smooth; Platinum Grey", "m": "WF-69102-PG", "d": "PG 69 x 102 Flat Wall", "len": 69, "w": null, "c": 278.25},
+{"g": "Walls Panels; Walls Panels; Wall Flats / Soap Dish Walls; Smooth; Platinum Grey", "m": "WF-6597-PG", "d": "PG 65 x 97 Flat Wall", "len": 65, "w": null, "c": 186.9},
 {"g": "Walls Panels; Walls Panels; Wall Flats / Soap Dish Walls; Smooth; Platinum Grey", "m": "WF-43103-PG", "d": "PG 43 x 103 Flat Wall", "len": 43, "w": null, "c": 181.65},
 {"g": "Walls Panels; Walls Panels; Wall Flats / Soap Dish Walls; Smooth; Platinum Grey", "m": "WF-4097-PG", "d": "PG 40 x 97 Flat Wall", "len": 40, "w": null, "c": 135.45},
 {"g": "Walls Panels; Walls Panels; Wall Flats / Soap Dish Walls; Smooth; Platinum Grey", "m": "WF-4065-PG", "d": "PG 40 x 65 Flat Wall", "len": 40, "w": null, "c": 109.2},
@@ -1881,7 +1896,7 @@ function grabBarLengthOptions(styleValue){
   return CONFIG.AR_gripGrabLengths;
 }
 
-/** B50 — silicone colour.  The Excel cell has no dropdown (see spec_notes.md
+/** B53 — silicone colour.  The Excel cell has no dropdown (see spec_notes.md
  *  "Approximations" #1); we offer the distinct Config!BF values. */
 function siliconeColorOptions(){
   return unique(CONFIG.siliconeTable.map(r => r.silicone));
@@ -1942,14 +1957,34 @@ const FIELDS = [
     hint:"37\" or less → 38\" bent side wall; over 38\" switches to a flat (WF-6597) side wall." },
   { cell:"B14", section:"WALL", label:"Surround Height", type:"number",
     hint:"96\" or less → 97\" Signature panels / 96\" Lifestyle panels; over 96\" → 108\" Lifestyle panels." },
-  { cell:"B15", section:"WALL", label:"Inside Corner Trim", type:"text", unused:true },
-  /* B16 (added 2026-08): Signature-only Yes/N/A toggle for an optional CT-175
-   * perimeter edge trim piece — see G22 in SECTION G. No C-column check formula
-   * exists for this field in the Excel, so there's no `validate` here either;
-   * the generic "not applicable" greying-out still applies via `options`. */
+  /* B15 (redefined 2026-08 sheet revision): used to be a free-text/unused row.
+   * The live sheet's C15 now validates it as a Lifestyle trim colour (same
+   * shape/list as B18), and G21 (Inside Corner Trim) reads it instead of B18.
+   * NOTE: this also means Signature no longer auto-gets an inside corner trim
+   * piece — the old automatic CR-96-ONE branch was removed from G21 in this
+   * revision (applied as-written per an explicit 2026-08 confirmation). */
+  { cell:"B15", section:"WALL", label:"Inside Corner Trim", type:"select",
+    options: s => EQ(s.B7,"Lifestyle") ? CONFIG.AH_trimColors : ["N/A"],
+    // C15
+    validate: s => raw(s.B15) === "" ? null
+      : ((EQ(s.B7,"Lifestyle") && INLIST(CONFIG.AH_trimColors, s.B15)) ||
+         (!EQ(s.B7,"Lifestyle") && EQ(s.B15,"N/A"))) ? null
+      : EQ(s.B7,"Lifestyle") ? "Not a valid Lifestyle trim colour."
+                             : "Trim colours only apply to the Lifestyle system — choose N/A." },
+  /* B16 (redefined 2026-08 sheet revision): was a Signature-only Yes/N/A toggle
+   * (added earlier in 2026-08) that always paired with the Back Wall Color.
+   * The live sheet's C16 now validates it as an actual colour code for BOTH
+   * systems — Signature: a Z_sigWallColors code (or N/A); Lifestyle: an
+   * AH_trimColors code — and G22 uses that colour directly ("CT-175-"+B16 /
+   * "PX96E"+B16) instead of pairing Signature with the Back Wall Color. */
   { cell:"B16", section:"WALL", label:"Perimeter Edge Trim", type:"select",
-    options: s => EQ(s.B7,"Signature") ? ["Yes","N/A"] : CONFIG.E_patternLifestyle,
-    hint:"Signature only. \"Yes\" adds a CT-175 perimeter trim piece in the Back Wall Color." },
+    options: s => EQ(s.B7,"Signature") ? [].concat(CONFIG.Z_sigWallColors, ["N/A"])
+              : EQ(s.B7,"Lifestyle") ? CONFIG.AH_trimColors : [],
+    // C16
+    validate: s => raw(s.B16) === "" ? null
+      : (EQ(s.B7,"Signature") && (EQ(s.B16,"N/A") || INLIST(CONFIG.Z_sigWallColors, s.B16))) ? null
+      : (EQ(s.B7,"Lifestyle") && INLIST(CONFIG.AH_trimColors, s.B16)) ? null
+      : "Not a valid perimeter trim colour for the selected wall system." },
   { cell:"B17", section:"WALL", label:"T Trim", type:"text", unused:true },
   { cell:"B18", section:"WALL", label:"Lifestyle wall Trim Color", type:"select",
     options: s => EQ(s.B7,"Lifestyle") ? CONFIG.AH_trimColors : CONFIG.E_patternLifestyle,
@@ -2072,36 +2107,66 @@ const FIELDS = [
         return "Back Wall Color (" + (TRIM(s.B10) || "blank") + ") is not available as a shelf colour.";
       return "Not a valid colour for the selected shelf.";
     } },
-  { cell:"B48", section:"ACCESSORIES", label:"Caddy", type:"select",
+  /* B48/B49/B50 (new 2026-08 sheet revision): a standalone "Grab Shelf"
+   * ordering path — Yes/No, then Size + Color once Yes. This produces the
+   * exact same PP588xx/PP578xx SKUs already reachable via the Shelves
+   * (B46/B47) dropdown's "20in Grab Shelf" / "30in Grab Bar Shelf" options;
+   * built anyway per an explicit 2026-08 confirmation to keep it as a
+   * separate path. See G32 in SECTION G. The Excel has no quantity formula
+   * for this row (I32 is blank) — defaulted to 1, matching every other
+   * single-unit optional accessory (Caddy, Soap Dish, ...). */
+  { cell:"B48", section:"ACCESSORIES", label:"Grab Shelf", type:"select",
+    options: () => ["Yes","No"],
+    // C48
+    validate: s => raw(s.B48) === "" ? null
+      : INLIST(["Yes","No"], s.B48) ? null : "Must be Yes or No." },
+  { cell:"B49", section:"ACCESSORIES", label:"Grab Shelf Size", type:"select",
+    options: s => EQ(s.B48,"Yes") ? CONFIG.BP_grabShelfSizes : ["N/A"],
+    // C49
+    validate: s => raw(s.B49) === "" ? null
+      : ((EQ(s.B48,"Yes") && INLIST(CONFIG.BP_grabShelfSizes, s.B49)) ||
+         (!EQ(s.B48,"Yes") && EQ(s.B49,"N/A"))) ? null
+      : "Grab Shelf Size only applies when Grab Shelf is Yes." },
+  { cell:"B50", section:"ACCESSORIES", label:"Grab Shelf Color", type:"select",
+    options: s => EQ(s.B48,"Yes") ? CONFIG.AV_shelfColorsGrab : ["N/A"],
+    // C50
+    validate: s => raw(s.B50) === "" ? null
+      : ((EQ(s.B48,"Yes") && INLIST(CONFIG.AV_shelfColorsGrab, s.B50)) ||
+         (!EQ(s.B48,"Yes") && EQ(s.B50,"N/A"))) ? null
+      : "Grab Shelf Color only applies when Grab Shelf is Yes." },
+  /* Caddy moved from B48 -> B51 in the 2026-08 sheet revision (rows 51-56
+   * below), to make room for the new Grab Shelf block above. */
+  { cell:"B51", section:"ACCESSORIES", label:"Caddy", type:"select",
     // Config!BG2
     options: s => TRIM(s.B7) === "Signature" ? CONFIG.BC_caddyOptions : ["N/A"] },
-  { cell:"B49", section:"ACCESSORIES", label:"Soap Dish", type:"text", unused:true },
-  { cell:"B50", section:"ACCESSORIES", label:"Silicone Color", type:"select",
+  { cell:"B52", section:"ACCESSORIES", label:"Soap Dish", type:"text", unused:true,
+    hint:"Orphaned label in the live sheet (no formula behind it) — kept as a reference-only placeholder." },
+  { cell:"B53", section:"ACCESSORIES", label:"Silicone Color", type:"select",
     options: siliconeColorOptions,
     hint:"Auto-set from the Back Wall Color (Config BD→BF table); can be overridden.",
-    // C50 actually validates B10, so the message is phrased around the wall colour.
+    // C53 actually validates B10, so the message is phrased around the wall colour.
     validate: s => raw(s.B10) === "" ? null
       : CONFIG.siliconeTable.some(r => EQ(r.code, TRIM(s.B10))) ? null
       : "Back Wall Color \"" + TRIM(s.B10) + "\" has no silicone colour mapping." },
-  { cell:"B51", section:"ACCESSORIES", label:"Silicone Clear", type:"select",
+  { cell:"B54", section:"ACCESSORIES", label:"Silicone Clear", type:"select",
     options: () => ["Yes","No"],
     hint:"Adds SP-SLN-CLR. (No dropdown exists in the Excel; the formula only tests for \"Yes\".)" },
-  /* B52/B53 (added 2026-08): Signature-only Tigris Soap Dish + colour. Distinct
-   * from the old, still-unused B49 "Soap Dish" free-text row above — see G30
-   * in SECTION G for the model number this feeds. */
-  { cell:"B52", section:"ACCESSORIES", label:"Soap Dish", type:"select",
+  /* B55/B56 (added 2026-08, moved from B52/B53 in this revision): Signature-only
+   * Tigris Soap Dish + colour — see G30 in SECTION G for the model number this
+   * feeds. Distinct from the orphaned, still-unused B52 "Soap Dish" row above. */
+  { cell:"B55", section:"ACCESSORIES", label:"Soap Dish", type:"select",
     options: s => EQ(s.B7,"Signature") ? ["Tigris Soap Dish","N/A"] : ["N/A"],
-    // C52
-    validate: s => raw(s.B52) === "" ? null
-      : ((EQ(s.B7,"Signature") && INLIST(["Tigris Soap Dish","N/A"], s.B52)) ||
-         (!EQ(s.B7,"Signature") && EQ(s.B52,"N/A"))) ? null
+    // C55
+    validate: s => raw(s.B55) === "" ? null
+      : ((EQ(s.B7,"Signature") && INLIST(["Tigris Soap Dish","N/A"], s.B55)) ||
+         (!EQ(s.B7,"Signature") && EQ(s.B55,"N/A"))) ? null
       : "Soap dish is only available on Signature wall systems. Choose N/A." },
-  { cell:"B53", section:"ACCESSORIES", label:"Soap Dish Color", type:"select",
-    options: s => EQ(s.B52,"Tigris Soap Dish") ? CONFIG.Z_sigWallColors : ["N/A"],
-    // C53
-    validate: s => raw(s.B53) === "" ? null
-      : ((EQ(s.B52,"Tigris Soap Dish") && INLIST(CONFIG.Z_sigWallColors, s.B53)) ||
-         (!EQ(s.B52,"Tigris Soap Dish") && EQ(s.B53,"N/A"))) ? null
+  { cell:"B56", section:"ACCESSORIES", label:"Soap Dish Color", type:"select",
+    options: s => EQ(s.B55,"Tigris Soap Dish") ? CONFIG.Z_sigWallColors : ["N/A"],
+    // C56
+    validate: s => raw(s.B56) === "" ? null
+      : ((EQ(s.B55,"Tigris Soap Dish") && INLIST(CONFIG.Z_sigWallColors, s.B56)) ||
+         (!EQ(s.B55,"Tigris Soap Dish") && EQ(s.B56,"N/A"))) ? null
       : "Pick a Signature color code, or N/A if no soap dish is selected." }
 ];
 
@@ -2303,10 +2368,13 @@ const LINE_ITEMS = [
   { row:17, label:"Grab bar 2", qty:() => 1,
     models: (s) => grabBarModels(s, s.B43, s.B44, s.B34) },
 
-  /* --- row 18 : Grab Shelf ------------------------------------------------
-     The Excel has a label and a quantity but NO formula in G18, so this line
-     never produces a model number.  Reproduced as-is. */
-  { row:18, label:"Grab Shelf", qty:() => 1, missingFormula:true, models:() => BLANK },
+  /* --- row 18 : Grab Shelf (dead stub, distinct from the real row 32 below) -
+     The Excel has a label and a quantity in F18/I18 but NO formula in G18, so
+     this line never produces a model number. Looks like leftover cruft from
+     an earlier, abandoned attempt at the same "Grab Shelf" feature that later
+     landed properly at row 32 (F32/G32/B48-B50) in the 2026-08 sheet revision
+     — reproduced as-is since it's genuinely inert either way. */
+  { row:18, label:"Grab Shelf (unused)", qty:() => 1, missingFormula:true, models:() => BLANK },
 
   /* --- G19 : Shelves ------------------------------------------------------ */
   { row:19, label:"Shelves", qty:() => 3,
@@ -2323,30 +2391,30 @@ const LINE_ITEMS = [
       return { models:["FX-WIN-" + TRIM(s.B22)], items:[], noMatch:false, constructed:true };
     } },
 
-  /* --- G21 : Inside Corner Trim ------------------------------------------- */
+  /* --- G21 : Inside Corner Trim ---------------------------------------------
+     Rewritten for the 2026-08 sheet revision: Signature no longer auto-gets
+     CR-96-ONE (that branch was removed live-side, applied here as confirmed),
+     and the Lifestyle branch now reads B15 instead of B18. */
   { row:21, label:"Inside Corner Trim", qty:() => 2,
     models(s){
-      if (EQ(s.B7,"Signature"))
-        return FILTER_CATALOG(it => SEARCH("CR-96-ONE", it.m));
-      if (EQ(s.B7,"Lifestyle")){
-        const suffix = (raw(s.B18) === "" || EQ(s.B18,"N/A")) ? "" : raw(s.B18);
-        return FILTER_CATALOG(it => SEARCH("PX96C" + suffix, it.m));
-      }
-      return BLANK;
+      if (!EQ(s.B7,"Lifestyle")) return BLANK;
+      if (raw(s.B15) === "" || EQ(s.B15,"N/A")) return BLANK;
+      return FILTER_CATALOG(it => SEARCH("PX96C" + raw(s.B15), it.m));
     } },
 
   /* --- G22 : Perimeter Edge Trim -------------------------------------------
-     Added 2026-08: Signature now has its own optional trim piece, gated by
-     the B16 Yes/N/A toggle — exact match "CT-175-<Back Wall Color>". The
-     original Lifestyle behaviour (unconditional on B18) is unchanged. */
+     Rewritten for the 2026-08 sheet revision: B16 is now a real colour code
+     for BOTH systems (was a Signature-only Yes/N-A toggle paired with the
+     Back Wall Color) — Signature: exact match "CT-175-<B16>"; Lifestyle:
+     "PX96E<B16>", same shape T Trim (G23, still on B18) already used. */
   { row:22, label:"Perimeter Edge Trim", qty:() => 4,
     models(s){
-      if (EQ(s.B7,"Signature")){
-        if (TRIM(s.B16) !== "Yes" || TRIM(s.B10) === "") return BLANK;
-        return FILTER_CATALOG(it => EQ(TRIM(it.m), "CT-175-" + TRIM(s.B10)));
-      }
-      if (TRIM(s.B7) !== "Lifestyle" || TRIM(s.B18) === "" || TRIM(s.B18) === "N/A") return BLANK;
-      return FILTER_CATALOG(it => SEARCH("PX96E" + TRIM(s.B18), it.m));
+      if (raw(s.B16) === "" || EQ(s.B16,"N/A")) return BLANK;
+      if (EQ(s.B7,"Signature"))
+        return FILTER_CATALOG(it => EQ(TRIM(it.m), "CT-175-" + TRIM(s.B16)));
+      if (EQ(s.B7,"Lifestyle"))
+        return FILTER_CATALOG(it => SEARCH("PX96E" + TRIM(s.B16), it.m));
+      return BLANK;
     } },
 
   /* --- G23 : T Trim  (no quantity in the Excel) ---------------------------- */
@@ -2359,8 +2427,8 @@ const LINE_ITEMS = [
   /* --- G24 : Caddy --------------------------------------------------------- */
   { row:24, label:"Caddy", qty:(s, h, res) => res.models.length ? 1 : null,
     models(s){
-      if (TRIM(s.B48) === "" || TRIM(s.B48) === "N/A" || TRIM(s.B10) === "") return BLANK;
-      const prefix = LOOKUP(CONFIG.caddyPrefix, "option", TRIM(s.B48), "prefix");
+      if (TRIM(s.B51) === "" || TRIM(s.B51) === "N/A" || TRIM(s.B10) === "") return BLANK;
+      const prefix = LOOKUP(CONFIG.caddyPrefix, "option", TRIM(s.B51), "prefix");
       if (prefix === "") return BLANK;
       return FILTER_CATALOG(it => EQ(TRIM(it.m), prefix + TRIM(s.B10)));
     } },
@@ -2395,18 +2463,37 @@ const LINE_ITEMS = [
                                   SEARCH("-" + TRIM(s.B34), it.m));
     } },
 
-  /* --- G30 : Soap Dish (added 2026-08) --------------------------------------
-     Signature-only Tigris Soap Dish. Model prefix comes from a one-row
-     lookup table (only "Tigris Soap Dish" has a prefix today — "SD-FLM-")
-     so this is written the same shape as the Excel's INDEX/MATCH rather than
-     hardcoding the single case, in case more soap dish styles get added
-     later the same way grab bars / shelves already work. */
+  /* --- G30 : Soap Dish (added 2026-08, moved to B55/B56 in the 2026-08.2
+     sheet revision) ------------------------------------------------------
+     Signature-only Tigris Soap Dish. Model prefix comes from the Config
+     BJ/BK lookup table (only "Tigris Soap Dish" has a prefix today —
+     "SD-FLM-"), matching the Excel's own INDEX/MATCH shape so more soap
+     dish styles can be added later the same way grab bars / shelves work. */
   { row:30, label:"Soap Dish", qty:(s, h, res) => res.models.length ? 1 : null,
     models(s){
-      if (TRIM(s.B52) === "" || TRIM(s.B52) === "N/A" || TRIM(s.B53) === "" || TRIM(s.B53) === "N/A") return BLANK;
-      const prefix = LOOKUP(CONFIG.soapDishPrefix, "option", TRIM(s.B52), "prefix");
+      if (TRIM(s.B55) === "" || TRIM(s.B55) === "N/A" || TRIM(s.B56) === "" || TRIM(s.B56) === "N/A") return BLANK;
+      const prefix = LOOKUP(CONFIG.soapDishPrefix, "option", TRIM(s.B55), "prefix");
       if (prefix === "") return BLANK;
-      return FILTER_CATALOG(it => EQ(TRIM(it.m), prefix + TRIM(s.B53)));
+      return FILTER_CATALOG(it => EQ(TRIM(it.m), prefix + TRIM(s.B56)));
+    } },
+
+  /* --- G32 : Grab Shelf (new 2026-08.2 sheet revision) ----------------------
+     A standalone Yes/No + Size + Color ordering path that resolves to the
+     exact same PP588xx/PP578xx SKUs already reachable via the Shelves
+     (B46/B47 -> G19) "20in Grab Shelf" / "30in Grab Bar Shelf" options —
+     built as a separate line item anyway per an explicit 2026-08 confirmation.
+     Prefix comes from Config!BP:BQ (grab shelf size), suffix reuses the same
+     Config!BA:BB metal-colour table the Shelves line item already uses. The
+     Excel has no quantity formula for this row (I32 is blank) — defaulted to
+     1, matching every other single-unit optional accessory. */
+  { row:32, label:"Grab Shelf", qty:(s, h, res) => res.models.length ? 1 : null,
+    models(s){
+      if (TRIM(s.B48) !== "Yes" || TRIM(s.B49) === "" || TRIM(s.B49) === "N/A" ||
+          TRIM(s.B50) === "" || TRIM(s.B50) === "N/A") return BLANK;
+      const prefix = LOOKUP(CONFIG.grabShelfSizePrefix, "option", TRIM(s.B49), "prefix");
+      const suffix = LOOKUP(CONFIG.metalSuffix, "color", TRIM(s.B50), "suffix");
+      if (prefix === "" || suffix === "") return BLANK;
+      return FILTER_CATALOG(it => EQ(TRIM(it.m), prefix + suffix));
     } },
 
   /* --- G39 : CWS (silicone sausage pack) ----------------------------------- */
@@ -2419,7 +2506,7 @@ const LINE_ITEMS = [
   /* --- G40 : Silicone ------------------------------------------------------ */
   { row:40, label:"Silicone", qty:() => 3,
     models(s){
-      const v = raw(s.B50);
+      const v = raw(s.B53);
       if (TRIM(v) === "" || TRIM(v).charAt(0) === "✗") return BLANK;
       const open = v.indexOf("("), close = v.indexOf(")");
       if (open === -1 || close === -1) return BLANK;                 // Excel: FIND → #VALUE!
@@ -2430,7 +2517,7 @@ const LINE_ITEMS = [
   /* --- G41 : Silicone 2 (clear) -------------------------------------------- */
   { row:41, label:"Silicone 2 (clear)", qty:() => 1,
     models(s){
-      if (TRIM(s.B51) !== "Yes") return BLANK;
+      if (TRIM(s.B54) !== "Yes") return BLANK;
       return FILTER_CATALOG(it => EQ(TRIM(it.m), "SP-SLN-CLR"));
     } }
 ];
@@ -2682,7 +2769,7 @@ function onFieldChange(f, value){
   // (the Excel has no formula there — see spec_notes.md "Approximations" #1).
   if (f.cell === "B10"){
     const auto = siliconeForWallColor(state);
-    if (auto) state.B50 = auto;
+    if (auto) state.B53 = auto;
   }
   refresh();
 }
@@ -2734,7 +2821,7 @@ function refresh(){
 /** Friendly explanation for a dropdown whose Excel source resolves to nothing. */
 function notApplicableMessage(f, s){
   switch (f.cell){
-    case "B10": case "B11": return "Choose a Wall System Type first.";
+    case "B10": case "B11": case "B16": return "Choose a Wall System Type first.";
     case "B26": return "Choose a stock tub or shower pan type first.";
     case "B29": return "Only applies to a Stock Acrylic Bathtub.";
     case "B30": return "Choose a tub / pan dimension first.";
