@@ -22,7 +22,7 @@
     SECTION G — LINE ITEMS              (column F/G/I → model numbers + qty)
     SECTION H — OUTPUT ASSEMBLY         ("Model Numbers Output" sheet)
     SECTION I — RENDERING / DOM
-    SECTION J — EXPORTS               (Word .docx cut sheet + model-list CSV)
+    SECTION J — EXPORTS               (PDF cut sheet + model-list CSV)
     SECTION K — BOOTSTRAP
 
   Cell references (B6, G19, Config!R14 …) are kept in the code and comments so
@@ -169,7 +169,7 @@ tr.qty-overridden .qty-input{border-color:var(--warn); background:#fffaf0}
       <small>Excel replica &middot; Selection Sheet &rarr; Model Numbers Output</small></div>
     <div class="header-actions">
       <a href="history.html" id="link-history" target="_blank" rel="noopener" class="btn-link">View order history</a>
-      <button type="button" id="btn-export-docx" class="primary">Export Cut Sheet (Word)</button>
+      <button type="button" id="btn-export-pdf" class="primary">Export Cut Sheet (PDF)</button>
       <button type="button" id="btn-export-csv" class="primary">Export Model List (CSV)</button>
       <button type="button" id="btn-reset-qty">Reset quantities</button>
       <button type="button" id="btn-reset">Reset form</button>
@@ -2851,16 +2851,18 @@ function money(n){ return "$" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",
 /* ==========================================================================
    SECTION J — EXPORTS
    Two export buttons, both fed by ONE snapshot of the app state
-   (`exportSnapshot()` → `lastOutput` + `state` + `job`) so the Word cut sheet
+   (`exportSnapshot()` → `lastOutput` + `state` + `job`) so the PDF cut sheet
    and the CSV order list can never disagree with each other or with the
    on-screen results table.
 
-     * Export Cut Sheet (Word)  → a real .docx (OOXML zip) built by hand below.
-     * Export Model List (CSV)  → Model Number + Quantity only, UTF-8 + BOM.
+     * Export Cut Sheet (PDF)   → a real .pdf built by hand below.
+     * Export Model List (CSV) → Model Number + Quantity only, UTF-8 + BOM.
 
-   The .docx writer is deliberately dependency-free: a .docx is just a ZIP of
-   XML parts, and ZIP entries may be STORED (uncompressed), so no deflate
-   implementation is needed — see `zipStore()`.
+   The PDF writer is deliberately dependency-free (same philosophy as the
+   Word writer it replaced): everything — page objects, the three core
+   Helvetica fonts every PDF reader ships with, content streams, the
+   cross-reference table — is assembled by hand in J.3/J.4, so the export
+   button never depends on an external library loading from a CDN.
    ========================================================================== */
 
 /* ------------------------------------------------------------------------
@@ -2951,343 +2953,439 @@ function exportModelListCsv(){
 }
 
 /* ------------------------------------------------------------------------
-   J.3 — Minimal ZIP writer (STORE / no compression).
-   Word opens uncompressed OOXML packages happily, which lets us skip a
-   deflate implementation entirely. CRC-32 and the three record types
-   (local header / central directory / EOCD) must be byte-exact.
+   J.3 — Minimal PDF primitives (no external libraries).
+   A .pdf is just a small set of objects (page tree, fonts, one content
+   stream per page) plus a byte-exact cross-reference table. We use the
+   three core Helvetica fonts every PDF reader ships with — nothing needs
+   to be embedded — with /WinAnsiEncoding so accented characters and the
+   app's own "smart" typographic characters (— · " ") round-trip correctly.
+
+   The whole file is built as one big "binary string": each JS character
+   represents exactly one output byte (0-255), the same trick browsers used
+   for binary data before Uint8Array was common. That keeps byte-offset
+   bookkeeping for the xref table simple (string length === byte count) and
+   avoids a UTF-8 encoder mangling the high WinAnsi bytes (0x80-0xFF).
    ------------------------------------------------------------------------ */
 
-const CRC32_TABLE = (function(){
-  const t = new Uint32Array(256);
-  for (let n = 0; n < 256; n++){
-    let c = n;
-    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    t[n] = c >>> 0;
-  }
-  return t;
-})();
+const PDF_PAGE_W = 612, PDF_PAGE_H = 792, PDF_MARGIN = 46;   // US Letter, ~0.64in margins
 
-function crc32(bytes){
-  let c = 0xFFFFFFFF;
-  for (let i = 0; i < bytes.length; i++) c = CRC32_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
-  return (c ^ 0xFFFFFFFF) >>> 0;
+/** Standard Adobe AFM widths (1/1000 em) for ASCII 32-126. Helvetica-Oblique
+ *  shares Helvetica's widths — oblique is a shear of the same glyphs, not a
+ *  different typeface. */
+const PDF_WIDTHS = {
+  Helvetica: [278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,
+    556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,
+    667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,
+    278,278,278,469,556,333,
+    556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,
+    334,260,334,584],
+  "Helvetica-Bold": [278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,
+    556,556,556,556,556,556,556,556,556,556,333,333,584,584,584,611,975,
+    722,722,722,722,667,611,778,722,278,556,722,611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,
+    333,278,333,584,556,333,
+    556,611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,556,556,500,
+    389,280,389,584]
+};
+PDF_WIDTHS["Helvetica-Oblique"] = PDF_WIDTHS.Helvetica;
+
+/** JS string -> array of WinAnsi byte values (0-255). Covers the common
+ *  "smart" typographic characters (curly quotes, en/em dash, ellipsis,
+ *  bullet) plus assorted Unicode space characters (collapsed to a plain
+ *  space — `toLocaleString()` timestamps sometimes use a narrow one).
+ *  Anything else unrepresentable (CJK, emoji, ...) falls back to "?"
+ *  rather than corrupting the file. */
+const PDF_WIN_ANSI_SPECIALS = { 0x2018:0x91, 0x2019:0x92, 0x201C:0x93, 0x201D:0x94,
+  0x2013:0x96, 0x2014:0x97, 0x2026:0x85, 0x2022:0x95, 0x2122:0x99 };
+function pdfToBytes(s){
+  const out = [];
+  for (const ch of String(s == null ? "" : s)){
+    const cp = ch.codePointAt(0);
+    if (cp >= 32 && cp <= 126) out.push(cp);
+    else if (PDF_WIN_ANSI_SPECIALS[cp] !== undefined) out.push(PDF_WIN_ANSI_SPECIALS[cp]);
+    else if (cp >= 0xA0 && cp <= 0xFF) out.push(cp);                       // Latin-1 == WinAnsi here
+    else if ((cp >= 0x2000 && cp <= 0x200B) || cp === 0x202F || cp === 0x3000) out.push(0x20);
+    else out.push(0x3F);                                                  // "?"
+  }
+  return out;
 }
 
-/**
- * @param {{name:string, data:string}[]} files  part name → UTF-8 text content
- * @param {Date} date                            timestamp stamped into each entry
- * @returns {Uint8Array}                         a complete .zip archive
- */
-function zipStore(files, date){
-  const enc = new TextEncoder();
+function pdfCharWidth(byte, font){
+  const t = PDF_WIDTHS[font];
+  return (byte >= 32 && byte <= 126) ? t[byte - 32] : 556;   // 556 ~= average glyph width, for the rare non-ASCII byte
+}
+function pdfTextWidth(bytes, font, size){
+  let w = 0;
+  for (const b of bytes) w += pdfCharWidth(b, font);
+  return w / 1000 * size;
+}
 
-  // MS-DOS packed time/date (2-second resolution, epoch 1980).
-  const dosTime = ((date.getHours() & 31) << 11) | ((date.getMinutes() & 63) << 5) |
-                  (Math.floor(date.getSeconds() / 2) & 31);
-  const year    = Math.max(1980, date.getFullYear());
-  const dosDate = (((year - 1980) & 127) << 9) | (((date.getMonth() + 1) & 15) << 5) |
-                  (date.getDate() & 31);
-
-  const entries = [];
-  let localSize = 0, cdSize = 0;
-  for (const f of files){
-    const name = enc.encode(f.name);
-    const data = enc.encode(f.data);
-    entries.push({ name:name, data:data, crc:crc32(data), offset:localSize });
-    localSize += 30 + name.length + data.length;   // local header + name + payload
-    cdSize    += 46 + name.length;                 // central directory record + name
+/** Escapes a WinAnsi byte array for a PDF literal string: `(`, `)` and `\`
+ *  must be backslash-escaped inside `( ... )`. */
+function pdfEscBytes(bytes){
+  const out = [];
+  for (const b of bytes){
+    if (b === 0x28 || b === 0x29 || b === 0x5C) out.push(0x5C);
+    out.push(b);
   }
+  return out;
+}
+function pdfBytesToStr(bytes){
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return s;
+}
 
-  const buf = new Uint8Array(localSize + cdSize + 22);   // + end-of-central-directory
-  const dv  = new DataView(buf.buffer);
-  let p = 0;
-  const u16 = v => { dv.setUint16(p, v & 0xFFFF, true); p += 2; };
-  const u32 = v => { dv.setUint32(p, v >>> 0, true);    p += 4; };
-  const raw8 = b => { buf.set(b, p); p += b.length; };
-
-  // --- local file headers + payloads ---
-  for (const e of entries){
-    u32(0x04034b50);                 // signature
-    u16(20);                         // version needed to extract (2.0)
-    u16(0);                          // general purpose flags (names are ASCII)
-    u16(0);                          // compression method: 0 = STORE
-    u16(dosTime); u16(dosDate);
-    u32(e.crc); u32(e.data.length); u32(e.data.length);
-    u16(e.name.length); u16(0);      // file name length / extra field length
-    raw8(e.name); raw8(e.data);
+/** Greedy word-wrap against a point width, operating on already-encoded
+ *  WinAnsi bytes so wrapping matches what will actually be drawn. A single
+ *  word too long for the column is hard-split by character instead of
+ *  overflowing it. */
+function pdfWrap(text, font, size, maxWidth){
+  const bytes = pdfToBytes(text);
+  const words = [];
+  let cur = [];
+  for (const b of bytes){
+    if (b === 32){ if (cur.length){ words.push(cur); cur = []; } }
+    else cur.push(b);
   }
+  if (cur.length) words.push(cur);
+  if (!words.length) return [[]];
 
-  // --- central directory ---
-  const cdStart = p;
-  for (const e of entries){
-    u32(0x02014b50);                 // signature
-    u16(20);                         // version made by
-    u16(20);                         // version needed to extract
-    u16(0); u16(0);                  // flags / method (STORE)
-    u16(dosTime); u16(dosDate);
-    u32(e.crc); u32(e.data.length); u32(e.data.length);
-    u16(e.name.length); u16(0); u16(0);   // name / extra / comment lengths
-    u16(0);                          // disk number start
-    u16(0); u32(0);                  // internal / external file attributes
-    u32(e.offset);                   // relative offset of local header
-    raw8(e.name);
+  const fits = arr => pdfTextWidth(arr, font, size) <= maxWidth;
+  const lines = [];
+  let line = [];
+  for (let word of words){
+    while (!fits(word)){
+      let cut = word.length;
+      while (cut > 1 && !fits(word.slice(0, cut))) cut--;
+      const piece = word.slice(0, Math.max(1, cut));
+      const candidate = line.length ? line.concat([32], piece) : piece;
+      if (line.length && fits(candidate)){ line = candidate; word = word.slice(piece.length); continue; }
+      if (line.length) lines.push(line);
+      lines.push(piece);
+      line = [];
+      word = word.slice(piece.length);
+    }
+    const candidate = line.length ? line.concat([32], word) : word;
+    if (fits(candidate)) line = candidate;
+    else { if (line.length) lines.push(line); line = word; }
   }
-  const cdEnd = p;
-
-  // --- end of central directory ---
-  u32(0x06054b50);
-  u16(0); u16(0);                    // this disk / disk with start of CD
-  u16(entries.length); u16(entries.length);
-  u32(cdEnd - cdStart); u32(cdStart);
-  u16(0);                            // .zip file comment length
-
-  return buf;
+  if (line.length || !lines.length) lines.push(line);
+  return lines;
 }
 
 /* ------------------------------------------------------------------------
-   J.4 — WordprocessingML builders.
-   Element ordering inside <w:rPr>/<w:pPr>/<w:tblPr>/<w:tcPr> follows the
-   OOXML schema sequence — Word rejects documents that get it wrong.
+   J.4 — Page/content-stream builder + table layout.
+   Layout runs top-down in a "y from top of page" coordinate (like CSS),
+   converted to PDF's bottom-left-origin coordinate only inside the four
+   drawing primitives. PDF pages are a fixed size — unlike the Word export
+   this replaced, there's no host application doing text reflow, so line
+   wrapping, row heights and page breaks are all handled by hand here.
    ------------------------------------------------------------------------ */
 
-function xmlEsc(v){
-  return raw(v)
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "")   // not representable in XML 1.0
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+function newPdfBook(){ return { pages: [] }; }
+function pdfNewPage(book){
+  const p = { ops: "", y: PDF_MARGIN };
+  book.pages.push(p);
+  book.cur = p;
+  return p;
+}
+function pdfAdvance(book, dy){ book.cur.y += dy; }
+
+function pdfColor(hex){
+  const r = parseInt(hex.slice(0,2),16)/255, g = parseInt(hex.slice(2,4),16)/255, b = parseInt(hex.slice(4,6),16)/255;
+  const f = n => (Math.round(n*1000)/1000).toString();
+  return f(r) + " " + f(g) + " " + f(b);
+}
+function pdfFontTag(font){ return font === "Helvetica-Bold" ? "/F2" : (font === "Helvetica-Oblique" ? "/F3" : "/F1"); }
+
+/** Draws already-WinAnsi-encoded bytes with their baseline at `yFromTop`. */
+function pdfDrawTextRaw(book, x, yFromTop, bytes, font, size, colorHex){
+  const y = PDF_PAGE_H - yFromTop;
+  const str = pdfBytesToStr(pdfEscBytes(bytes));
+  book.cur.ops += (colorHex ? pdfColor(colorHex) : "0 0 0") + " rg\n" +
+    "BT " + pdfFontTag(font) + " " + size + " Tf 1 0 0 1 " + x.toFixed(2) + " " + y.toFixed(2) +
+    " Tm (" + str + ") Tj ET\n";
+}
+function pdfDrawText(book, x, yFromTop, text, font, size, colorHex){
+  pdfDrawTextRaw(book, x, yFromTop, pdfToBytes(text), font, size, colorHex);
+}
+function pdfFillRect(book, x, yFromTop, w, h, colorHex){
+  const y = PDF_PAGE_H - yFromTop - h;
+  book.cur.ops += pdfColor(colorHex) + " rg\n" +
+    x.toFixed(2) + " " + y.toFixed(2) + " " + w.toFixed(2) + " " + h.toFixed(2) + " re f\n";
+}
+function pdfLine(book, x1, yFromTop1, x2, yFromTop2, colorHex, width){
+  const y1 = PDF_PAGE_H - yFromTop1, y2 = PDF_PAGE_H - yFromTop2;
+  book.cur.ops += pdfColor(colorHex || "C4CDD6") + " RG " + (width || 0.75) + " w\n" +
+    x1.toFixed(2) + " " + y1.toFixed(2) + " m " + x2.toFixed(2) + " " + y2.toFixed(2) + " l S\n";
 }
 
-/** A text run. opts: {b, i, color:"RRGGBB", sz:<half-points>, mono:true} */
-function wRun(text, opts){
-  opts = opts || {};
-  let pr = "";
-  if (opts.mono)  pr += '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/>';
-  if (opts.b)     pr += "<w:b/>";
-  if (opts.i)     pr += "<w:i/>";
-  if (opts.color) pr += '<w:color w:val="' + opts.color + '"/>';
-  if (opts.sz)    pr += '<w:sz w:val="' + opts.sz + '"/><w:szCs w:val="' + opts.sz + '"/>';
-  return "<w:r>" + (pr ? "<w:rPr>" + pr + "</w:rPr>" : "") +
-         '<w:t xml:space="preserve">' + xmlEsc(text) + "</w:t></w:r>";
+function pdfHeading(book, text, level){
+  const size  = level === 0 ? 20 : level === 1 ? 13 : 11;
+  const color = level === 2 ? "1C2530" : "0B6FB8";
+  const before = level === 0 ? 0 : level === 1 ? 16 : 10;
+  const after  = level === 0 ? 4 : level === 1 ? 6 : 4;
+  if (book.cur.y + before + size > PDF_PAGE_H - PDF_MARGIN) pdfNewPage(book);
+  else pdfAdvance(book, before);
+  pdfAdvance(book, size);
+  pdfDrawText(book, PDF_MARGIN, book.cur.y, text, "Helvetica-Bold", size, color);
+  pdfAdvance(book, after);
 }
 
-/** A paragraph. opts: {style, jc, before, after, keepNext} */
-function wPara(runs, opts){
+function pdfPara(book, text, opts){
   opts = opts || {};
-  const body = Array.isArray(runs) ? runs.join("") : (runs || "");
-  let pr = "";
-  if (opts.style)    pr += '<w:pStyle w:val="' + opts.style + '"/>';
-  if (opts.keepNext) pr += "<w:keepNext/>";
-  if (opts.before !== undefined || opts.after !== undefined){
-    pr += "<w:spacing" + (opts.before !== undefined ? ' w:before="' + opts.before + '"' : "") +
-          (opts.after !== undefined ? ' w:after="' + opts.after + '"' : "") + "/>";
+  const size = opts.size || 9;
+  const font = opts.bold ? "Helvetica-Bold" : (opts.italic ? "Helvetica-Oblique" : "Helvetica");
+  const maxWidth = PDF_PAGE_W - 2 * PDF_MARGIN;
+  if (opts.before) pdfAdvance(book, opts.before);
+  const lines = pdfWrap(text, font, size, maxWidth);
+  for (const lineBytes of lines){
+    if (book.cur.y + size * 1.15 > PDF_PAGE_H - PDF_MARGIN) pdfNewPage(book);
+    pdfAdvance(book, size * 1.15);
+    pdfDrawTextRaw(book, PDF_MARGIN, book.cur.y, lineBytes, font, size, opts.color);
   }
-  if (opts.jc) pr += '<w:jc w:val="' + opts.jc + '"/>';
-  return "<w:p>" + (pr ? "<w:pPr>" + pr + "</w:pPr>" : "") + body + "</w:p>";
+  pdfAdvance(book, opts.after !== undefined ? opts.after : 6);
 }
 
-/** A table cell. opts: {w:<twips>, shade:"RRGGBB", jc} — content is plain text. */
-function wCell(text, opts){
-  opts = opts || {};
-  let pr = '<w:tcW w:w="' + (opts.w || 0) + '" w:type="' + (opts.w ? "dxa" : "auto") + '"/>';
-  if (opts.shade) pr += '<w:shd w:val="clear" w:color="auto" w:fill="' + opts.shade + '"/>';
-  pr += '<w:vAlign w:val="center"/>';
-  const para = wPara(wRun(text, opts), { jc: opts.jc, after: 20 });
-  return "<w:tc><w:tcPr>" + pr + "</w:tcPr>" + para + "</w:tc>";
+function pdfColX(widths){
+  const xs = [PDF_MARGIN];
+  for (const w of widths) xs.push(xs[xs.length - 1] + w);
+  return xs;
 }
 
-/** A table row. `header` marks it as a repeating heading row when printed. */
-function wRow(cells, header){
-  return "<w:tr>" + (header ? "<w:trPr><w:tblHeader/></w:trPr>" : "") + cells.join("") + "</w:tr>";
+/** Wraps every cell in a row against its column width and reports how many
+ *  lines the tallest cell needs, so the row's height can be known before
+ *  anything is drawn (required to decide whether it still fits the page). */
+function pdfMeasureRow(cells, widths, size, pad){
+  const wrapped = cells.map((c, i) => pdfWrap(c.text == null ? "" : String(c.text),
+    c.bold ? "Helvetica-Bold" : (c.italic ? "Helvetica-Oblique" : "Helvetica"),
+    size, Math.max(20, widths[i] - pad * 2)));
+  let lineCount = 1;
+  for (const w of wrapped) if (w.length > lineCount) lineCount = w.length;
+  return { wrapped, lineCount };
 }
 
-/** A bordered, fixed-layout table. `widths` are twips and drive the grid. */
-function wTable(rows, widths){
-  const grid = widths.map(w => '<w:gridCol w:w="' + w + '"/>').join("");
-  const borders = ["top","left","bottom","right","insideH","insideV"]
-    .map(s => "<w:" + s + ' w:val="single" w:sz="4" w:space="0" w:color="C4CDD6"/>').join("");
-  return "<w:tbl><w:tblPr>" +
-           '<w:tblW w:w="' + widths.reduce((a,b) => a+b, 0) + '" w:type="dxa"/>' +
-           "<w:tblBorders>" + borders + "</w:tblBorders>" +
-           '<w:tblLayout w:type="fixed"/>' +
-           '<w:tblCellMar><w:top w:w="40" w:type="dxa"/><w:left w:w="80" w:type="dxa"/>' +
-           '<w:bottom w:w="40" w:type="dxa"/><w:right w:w="80" w:type="dxa"/></w:tblCellMar>' +
-         "</w:tblPr><w:tblGrid>" + grid + "</w:tblGrid>" + rows.join("") + "</w:tbl>";
+function pdfDrawRow(book, cells, widths, meas, o){
+  const { xs, pad, lineH, size, y0 } = o;
+  const rowH = meas.lineCount * lineH + pad * 2;
+  cells.forEach((c, i) => { if (c.shade) pdfFillRect(book, xs[i], y0, widths[i], rowH, c.shade); });
+  cells.forEach((c, i) => {
+    const font = c.bold ? "Helvetica-Bold" : (c.italic ? "Helvetica-Oblique" : "Helvetica");
+    let ty = y0 + pad + size * 0.92;
+    for (const lineBytes of meas.wrapped[i]){
+      let tx = xs[i] + pad;
+      if (c.align === "right") tx = xs[i] + widths[i] - pad - pdfTextWidth(lineBytes, font, size);
+      pdfDrawTextRaw(book, tx, ty, lineBytes, font, size, c.color);
+      ty += lineH;
+    }
+  });
+  pdfLine(book, xs[0], y0 + rowH, xs[xs.length - 1], y0 + rowH, "C4CDD6", 0.75);
+  return rowH;
+}
+function pdfDrawVerticalGrid(book, xs, top, bottom){
+  for (const x of xs) pdfLine(book, x, top, x, bottom, "C4CDD6", 0.75);
+}
+
+/** A bordered table with a shaded, bold header row that repeats on every
+ *  page it spans. `widths` are points and must fit inside the margins.
+ *  `headerCells`/`bodyRows` are arrays of `{text, bold, italic, color,
+ *  shade, align}` cell objects, one array per row. */
+function pdfTable(book, headerCells, bodyRows, widths){
+  const xs = pdfColX(widths);
+  const pad = 4, lineH = 10.5, size = 8.6;
+  const rowOpts = { xs, pad, lineH, size };
+
+  function drawHeader(){
+    const meas = pdfMeasureRow(headerCells, widths, size, pad);
+    const y0 = book.cur.y;
+    pdfAdvance(book, pdfDrawRow(book, headerCells, widths, meas, Object.assign({}, rowOpts, { y0 })));
+    return y0;
+  }
+
+  let segTop = drawHeader();
+  let segBottom = book.cur.y;
+
+  for (const row of bodyRows){
+    const meas = pdfMeasureRow(row, widths, size, pad);
+    const rowH = meas.lineCount * lineH + pad * 2;
+    if (book.cur.y + rowH > PDF_PAGE_H - PDF_MARGIN){
+      pdfDrawVerticalGrid(book, xs, segTop, segBottom);
+      pdfNewPage(book);
+      segTop = drawHeader();
+      segBottom = book.cur.y;
+    }
+    const y0 = book.cur.y;
+    pdfAdvance(book, pdfDrawRow(book, row, widths, meas, Object.assign({}, rowOpts, { y0 })));
+    segBottom = book.cur.y;
+  }
+  pdfDrawVerticalGrid(book, xs, segTop, segBottom);
+  pdfAdvance(book, 8);
+}
+
+/** Serializes a `book` (one content-stream string per page) into a
+ *  complete, byte-exact .pdf file: Catalog, Pages tree, the three core
+ *  fonts, one Page+Contents object pair per page, and a standard
+ *  cross-reference table + trailer. Returns a Uint8Array. */
+function buildPdfFile(book){
+  let out = "%PDF-1.4\n";
+  const offsets = [];
+  function obj(n, body){ offsets[n] = out.length; out += n + " 0 obj\n" + body + "\nendobj\n"; }
+
+  const n = book.pages.length;
+  const catalogNum = 1, pagesNum = 2, fHelvNum = 3, fBoldNum = 4, fObliNum = 5, firstPageNum = 6;
+
+  obj(catalogNum, "<< /Type /Catalog /Pages " + pagesNum + " 0 R >>");
+
+  const kids = [];
+  for (let i = 0; i < n; i++) kids.push((firstPageNum + i * 2) + " 0 R");
+  obj(pagesNum, "<< /Type /Pages /Kids [" + kids.join(" ") + "] /Count " + n + " >>");
+
+  obj(fHelvNum, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
+  obj(fBoldNum, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
+  obj(fObliNum, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding >>");
+
+  for (let i = 0; i < n; i++){
+    const pageNum = firstPageNum + i * 2, contentsNum = pageNum + 1;
+    obj(pageNum,
+      "<< /Type /Page /Parent " + pagesNum + " 0 R /MediaBox [0 0 " + PDF_PAGE_W + " " + PDF_PAGE_H + "]" +
+      " /Resources << /Font << /F1 " + fHelvNum + " 0 R /F2 " + fBoldNum + " 0 R /F3 " + fObliNum + " 0 R >> >>" +
+      " /Contents " + contentsNum + " 0 R >>");
+    const stream = book.pages[i].ops;
+    obj(contentsNum, "<< /Length " + stream.length + " >>\nstream\n" + stream + "\nendstream");
+  }
+
+  const totalObjs = firstPageNum - 1 + n * 2;   // highest object number actually used
+  const xrefStart = out.length;
+  out += "xref\n0 " + (totalObjs + 1) + "\n0000000000 65535 f \n";
+  for (let i = 1; i <= totalObjs; i++) out += String(offsets[i] || 0).padStart(10, "0") + " 00000 n \n";
+  out += "trailer\n<< /Size " + (totalObjs + 1) + " /Root " + catalogNum + " 0 R >>\n";
+  out += "startxref\n" + xrefStart + "\n%%EOF";
+
+  const bytes = new Uint8Array(out.length);
+  for (let i = 0; i < out.length; i++) bytes[i] = out.charCodeAt(i) & 0xFF;
+  return bytes;
 }
 
 /* ------------------------------------------------------------------------
    J.5 — The cut sheet document itself.
    ------------------------------------------------------------------------ */
 
-const DOCX_HEAD = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n';
-
-const DOCX_CONTENT_TYPES = DOCX_HEAD +
-  '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
-  '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
-  '<Default Extension="xml" ContentType="application/xml"/>' +
-  '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
-  '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
-  '</Types>';
-
-const DOCX_ROOT_RELS = DOCX_HEAD +
-  '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-  '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
-  '</Relationships>';
-
-const DOCX_DOC_RELS = DOCX_HEAD +
-  '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-  '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
-  '</Relationships>';
-
-const DOCX_STYLES = DOCX_HEAD +
-  '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
-    "<w:docDefaults>" +
-      "<w:rPrDefault><w:rPr>" +
-        '<w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/>' +
-        '<w:sz w:val="19"/><w:szCs w:val="19"/>' +
-      "</w:rPr></w:rPrDefault>" +
-      '<w:pPrDefault><w:pPr><w:spacing w:after="60" w:line="240" w:lineRule="auto"/></w:pPr></w:pPrDefault>' +
-    "</w:docDefaults>" +
-    '<w:style w:type="paragraph" w:default="1" w:styleId="Normal">' +
-      '<w:name w:val="Normal"/><w:qFormat/></w:style>' +
-    '<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/>' +
-      '<w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/>' +
-      '<w:pPr><w:spacing w:after="0"/></w:pPr>' +
-      '<w:rPr><w:b/><w:color w:val="0B6FB8"/><w:sz w:val="40"/><w:szCs w:val="40"/></w:rPr></w:style>' +
-    '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/>' +
-      '<w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/>' +
-      '<w:pPr><w:keepNext/><w:spacing w:before="280" w:after="100"/></w:pPr>' +
-      '<w:rPr><w:b/><w:color w:val="0B6FB8"/><w:sz w:val="26"/><w:szCs w:val="26"/></w:rPr></w:style>' +
-    '<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/>' +
-      '<w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/>' +
-      '<w:pPr><w:keepNext/><w:spacing w:before="180" w:after="60"/></w:pPr>' +
-      '<w:rPr><w:b/><w:color w:val="1C2530"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:style>' +
-  "</w:styles>";
-
-const DOCX_SECT_PR =
-  '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/>' +
-  '<w:pgMar w:top="1080" w:right="1080" w:bottom="1080" w:left="1080" ' +
-  'w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>';
-
 const HEAD_SHADE = "E8F2FA";   // matches the app's --accent-soft
 const LBL_SHADE  = "F7F9FB";
 
-/** Builds `word/document.xml` for the cut sheet from a snapshot. */
-function buildCutSheetXml(snap){
-  const b = [];
+/** Lays out the cut sheet from a snapshot and returns a PDF `book`
+ *  (mirrors what `buildCutSheetXml` used to do for the Word export). */
+function buildCutSheetPdfBook(snap){
+  const book = newPdfBook();
+  pdfNewPage(book);
+  const usable = PDF_PAGE_W - 2 * PDF_MARGIN;
   const money2 = n => "$" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
   /* ---------- title block ---------- */
-  b.push(wPara(wRun("Bath Remodel — Cut Sheet", {}), { style:"Title" }));
-  b.push(wPara(wRun("Complete job reference · generated " + snap.stamp.toLocaleString(),
-                    { i:true, color:"5B6874" }), { after:160 }));
+  pdfHeading(book, "Bath Remodel — Cut Sheet", 0);
+  pdfPara(book, "Complete job reference · generated " + snap.stamp.toLocaleString(),
+          { italic:true, color:"5B6874", size:8.6, after:14 });
 
   /* ---------- job information ---------- */
-  b.push(wPara(wRun("Job Information"), { style:"Heading1" }));
-  const jobRows = [wRow([ wCell("Field",  { w:3200, shade:HEAD_SHADE, b:true }),
-                          wCell("Value",  { w:6880, shade:HEAD_SHADE, b:true }) ], true)];
-  for (const f of snap.jobInfo){
-    jobRows.push(wRow([ wCell(f.label, { w:3200, shade:LBL_SHADE }),
-                        wCell(f.value || "—", { w:6880, b:!!f.value }) ]));
+  pdfHeading(book, "Job Information", 1);
+  {
+    const widths = [150, usable - 150];
+    const header = [ {text:"Field", bold:true, shade:HEAD_SHADE}, {text:"Value", bold:true, shade:HEAD_SHADE} ];
+    const rows = snap.jobInfo.map(f => [
+      {text:f.label, shade:LBL_SHADE},
+      {text:f.value || "—", bold: !!f.value}
+    ]);
+    pdfTable(book, header, rows, widths);
   }
-  b.push(wTable(jobRows, [3200, 6880]));
 
   /* ---------- selections, grouped exactly like the UI ---------- */
-  b.push(wPara(wRun("Selections"), { style:"Heading1" }));
+  pdfHeading(book, "Selections", 1);
   if (!snap.sections.length){
-    b.push(wPara(wRun("No selections have been made yet.", { i:true, color:"5B6874" })));
+    pdfPara(book, "No selections have been made yet.", { italic:true, color:"5B6874" });
   } else {
+    const widths = [usable * 0.40, usable * 0.12, usable * 0.48];
     for (const sec of snap.sections){
-      b.push(wPara(wRun(sec.name), { style:"Heading2" }));
-      const rows = [wRow([ wCell("Field", { w:3800, shade:HEAD_SHADE, b:true }),
-                           wCell("Cell",  { w:900,  shade:HEAD_SHADE, b:true }),
-                           wCell("Selection", { w:5380, shade:HEAD_SHADE, b:true }) ], true)];
-      for (const f of sec.fields){
-        rows.push(wRow([ wCell(f.label, { w:3800, shade:LBL_SHADE }),
-                         wCell(f.cell,  { w:900, color:"93A0AC", mono:true }),
-                         wCell(f.value, { w:5380, b:true }) ]));
-      }
-      b.push(wTable(rows, [3800, 900, 5380]));
+      pdfHeading(book, sec.name, 2);
+      const header = [
+        {text:"Field", bold:true, shade:HEAD_SHADE},
+        {text:"Cell", bold:true, shade:HEAD_SHADE},
+        {text:"Selection", bold:true, shade:HEAD_SHADE}
+      ];
+      const rows = sec.fields.map(f => [
+        {text:f.label, shade:LBL_SHADE},
+        {text:f.cell, color:"93A0AC"},
+        {text:f.value, bold:true}
+      ]);
+      pdfTable(book, header, rows, widths);
     }
   }
 
   /* ---------- computed product list ---------- */
-  b.push(wPara(wRun("Product List"), { style:"Heading1" }));
+  pdfHeading(book, "Product List", 1);
   if (!snap.rows.length){
-    b.push(wPara(wRun("No product lines have been computed yet.", { i:true, color:"5B6874" })));
+    pdfPara(book, "No product lines have been computed yet.", { italic:true, color:"5B6874" });
   } else {
-    const W = [1900, 3100, 700, 1000, 1080, 2300];   // sums to 10080 = printable width
-    const rows = [wRow([
-      wCell("Model Number", { w:W[0], shade:HEAD_SHADE, b:true }),
-      wCell("Description",  { w:W[1], shade:HEAD_SHADE, b:true }),
-      wCell("Qty",          { w:W[2], shade:HEAD_SHADE, b:true, jc:"right" }),
-      wCell("Unit Cost",    { w:W[3], shade:HEAD_SHADE, b:true, jc:"right" }),
-      wCell("Extended",     { w:W[4], shade:HEAD_SHADE, b:true, jc:"right" }),
-      wCell("Source Line(s)", { w:W[5], shade:HEAD_SHADE, b:true })
-    ], true)];
-
+    // Same proportions as the old Word column widths (1900/3100/700/1000/1080/2300 twips).
+    const W = [0.1885, 0.3075, 0.0695, 0.0992, 0.1071, 0.2282].map(f => f * usable);
+    const header = [
+      {text:"Model Number", bold:true, shade:HEAD_SHADE},
+      {text:"Description",  bold:true, shade:HEAD_SHADE},
+      {text:"Qty",          bold:true, shade:HEAD_SHADE, align:"right"},
+      {text:"Unit Cost",    bold:true, shade:HEAD_SHADE, align:"right"},
+      {text:"Extended",     bold:true, shade:HEAD_SHADE, align:"right"},
+      {text:"Source Line(s)", bold:true, shade:HEAD_SHADE}
+    ];
+    const rows = [];
     for (const r of snap.rows){
       const unit = (r.item && typeof r.item.c === "number") ? r.item.c : null;
       const ext  = (unit !== null && r.qty) ? unit * r.qty : null;
-      rows.push(wRow([
-        wCell(r.model, { w:W[0], mono:true, b:true, color: r.noMatch ? "B3261E" : null }),
-        wCell(r.noMatch ? "Check the selections for this line item"
-                        : (r.item ? r.item.d : ""), { w:W[1], i:r.noMatch }),
-        wCell(r.qty === null ? "—" : String(r.qty), { w:W[2], jc:"right" }),
-        wCell(unit === null ? "" : money2(unit), { w:W[3], jc:"right" }),
-        wCell(ext  === null ? "" : money2(ext),  { w:W[4], jc:"right" }),
-        wCell(r.sources.join(", "), { w:W[5], color:"5B6874" })
-      ]));
+      rows.push([
+        {text:r.model, bold:true, color: r.noMatch ? "B3261E" : null},
+        {text: r.noMatch ? "Check the selections for this line item" : (r.item ? r.item.d : ""), italic: r.noMatch},
+        {text: r.qty === null ? "—" : String(r.qty), align:"right"},
+        {text: unit === null ? "" : money2(unit), align:"right"},
+        {text: ext  === null ? "" : money2(ext),  align:"right"},
+        {text: r.sources.join(", "), color:"5B6874"}
+      ]);
     }
-
-    // Totals band.
-    rows.push(wRow([
-      wCell("TOTAL", { w:W[0], b:true, shade:LBL_SHADE }),
-      wCell(snap.rows.length + " distinct SKU" + (snap.rows.length === 1 ? "" : "s"),
-            { w:W[1], shade:LBL_SHADE, color:"5B6874" }),
-      wCell(String(snap.totalQty), { w:W[2], b:true, jc:"right", shade:LBL_SHADE }),
-      wCell("", { w:W[3], shade:LBL_SHADE }),
-      wCell(snap.haveCost ? money2(snap.cost) : "—", { w:W[4], b:true, jc:"right", shade:LBL_SHADE }),
-      wCell("", { w:W[5], shade:LBL_SHADE })
-    ]));
-    b.push(wTable(rows, W));
+    rows.push([
+      {text:"TOTAL", bold:true, shade:LBL_SHADE},
+      {text: snap.rows.length + " distinct SKU" + (snap.rows.length === 1 ? "" : "s"), shade:LBL_SHADE, color:"5B6874"},
+      {text:String(snap.totalQty), bold:true, shade:LBL_SHADE, align:"right"},
+      {text:"", shade:LBL_SHADE},
+      {text: snap.haveCost ? money2(snap.cost) : "—", bold:true, shade:LBL_SHADE, align:"right"},
+      {text:"", shade:LBL_SHADE}
+    ]);
+    pdfTable(book, header, rows, W);
   }
 
   /* ---------- outstanding issues, if any ---------- */
   if (snap.issues && snap.issues.length){
-    b.push(wPara(wRun("Issues To Review"), { style:"Heading1" }));
+    pdfHeading(book, "Issues To Review", 1);
     for (const i of snap.issues){
-      b.push(wPara(wRun((i.level === "err" ? "ERROR — " : "WARNING — ") + i.text,
-                        { color: i.level === "err" ? "B3261E" : "8A5A00" }), { after:40 }));
+      pdfPara(book, (i.level === "err" ? "ERROR — " : "WARNING — ") + i.text,
+              { color: i.level === "err" ? "B3261E" : "8A5A00", after:3 });
     }
   }
 
-  b.push(wPara(wRun("Estimated costs are catalog list prices and exclude tax, freight and labor.",
-                    { i:true, color:"93A0AC", sz:16 }), { before:240 }));
+  pdfPara(book, "Estimated costs are catalog list prices and exclude tax, freight and labor.",
+          { italic:true, color:"93A0AC", size:7.5, before:10 });
 
-  return DOCX_HEAD +
-    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
-    "<w:body>" + b.join("") + DOCX_SECT_PR + "</w:body></w:document>";
+  return book;
 }
 
-/** Assembles the whole OOXML package. Returns a Uint8Array of .docx bytes. */
-function buildCutSheetDocx(snap){
-  return zipStore([
-    { name:"[Content_Types].xml",        data: DOCX_CONTENT_TYPES },
-    { name:"_rels/.rels",                data: DOCX_ROOT_RELS },
-    { name:"word/document.xml",          data: buildCutSheetXml(snap) },
-    { name:"word/_rels/document.xml.rels", data: DOCX_DOC_RELS },
-    { name:"word/styles.xml",            data: DOCX_STYLES }
-  ], snap.stamp);
+/** Assembles the whole cut sheet PDF. Returns a Uint8Array of .pdf bytes. */
+function buildCutSheetPdf(snap){
+  return buildPdfFile(buildCutSheetPdfBook(snap));
 }
 
-function exportCutSheetDocx(){
+function exportCutSheetPdf(){
   if (!requireJobFields()) return;
   const snap = exportSnapshot();
-  const bytes = buildCutSheetDocx(snap);
-  downloadBlob(new Blob([bytes], {
-    type:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-  }), exportFileName("Cut Sheet", snap, "docx"));
-  logExportToHistory(snap, "docx");
+  const bytes = buildCutSheetPdf(snap);
+  downloadBlob(new Blob([bytes], { type:"application/pdf" }),
+               exportFileName("Cut Sheet", snap, "pdf"));
+  logExportToHistory(snap, "pdf");
 }
 
 /* ==========================================================================
@@ -3305,7 +3403,7 @@ document.addEventListener("DOMContentLoaded", function(){
   buildJobFields();
   buildForm();
   refresh();
-  document.getElementById("btn-export-docx").addEventListener("click", exportCutSheetDocx);
+  document.getElementById("btn-export-pdf").addEventListener("click", exportCutSheetPdf);
   document.getElementById("btn-export-csv").addEventListener("click", exportModelListCsv);
   document.getElementById("btn-reset-qty").addEventListener("click", function(){
     if (qtyOverrides.size === 0) return;
@@ -3321,7 +3419,8 @@ document.addEventListener("DOMContentLoaded", function(){
 if (typeof module !== "undefined" && module.exports){
   module.exports = { CONFIG, CATALOG, computeOutput, computeHelpers, FIELDS, LINE_ITEMS,
                      doorRodOptions, seatTopOptions, panDimensionOptions,
-                     zipStore, crc32, buildCutSheetXml, buildCutSheetDocx, buildModelListCsv,
+                     buildCutSheetPdfBook, buildCutSheetPdf, buildPdfFile, pdfWrap, pdfToBytes,
+                     pdfTextWidth, PDF_WIDTHS, buildModelListCsv,
                      applyQtyOverrides, qtyOverrides };
 }
 </script>
