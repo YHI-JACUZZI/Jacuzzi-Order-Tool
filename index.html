@@ -593,6 +593,12 @@ const CONFIG = {
   "BP_grabShelfSizes": [
     "20in Grab Shelf",
     "30in Grab Bar Shelf"
+  ],
+  "BR_footPedestalColors": [
+    "BN",
+    "CH",
+    "MB",
+    "N/A"
   ]
 };
 
@@ -931,7 +937,7 @@ const CATALOG = [
 {"g": "Shower Pans; Signature Shower Pans; Built In Seat Shower Pans", "m": "SR-BISS32R-QT", "d": "QT 60 L x 32 W RH Signature Built-in Seated Shower Pan", "len": 60, "w": 32, "c": 706.65},
 {"g": "Shower Pans; Signature Shower Pans; Built In Seat Shower Pans", "m": "SR-BISS32R-SB", "d": "SB 60 L x 32 W RH Signature Built-in Seated Shower Pan", "len": 60, "w": 32, "c": 706.65},
 {"g": "Shower Pans; Signature Shower Pans; Built In Seat Shower Pans", "m": "SR-BISS30L-QT", "d": "QT 60 L x 30 W LH Signature Built-in Seated Shower Pan", "len": 60, "w": 30, "c": 706.65},
-{"g": "Shower Pans; Signature Shower Pans; Built In Seat Shower Pans", "m": "SR-BISS32L-PG", "d": "PG 60 L x 30 W LH Signature Built-in Seated Shower Pan", "len": 60, "w": 30, "c": 706.65},
+{"g": "Shower Pans; Signature Shower Pans; Built In Seat Shower Pans", "m": "SR-BISS32L-PG", "d": "PG 60 L x 32 W LH Signature Built-in Seated Shower Pan", "len": 60, "w": 32, "c": 706.65},
 {"g": "Shower Pans; Signature Shower Pans; Barrier Free Shower Pans", "m": "SR-BF32C-AW", "d": "SR-BF32C-AW", "len": null, "w": null, "c": 551.25},
 {"g": "Shower Pans; Signature Shower Pans; Barrier Free Shower Pans", "m": "SR-BF32C-PG", "d": "PG 60 L x 32 W C Signature Barrier Free Shower Pan", "len": 60, "w": 32, "c": 551.25},
 {"g": "Shower Pans; Signature Shower Pans; Barrier Free Shower Pans", "m": "SR-BF32C-QT", "d": "QT 60 L x 32 W C Signature Barrier Free Shower Pan", "len": 60, "w": 32, "c": 551.25},
@@ -1906,6 +1912,17 @@ function siliconeForWallColor(s){
   return LOOKUP(CONFIG.siliconeTable, "code", TRIM(s.B10), "silicone");
 }
 
+/** B54 — Silicone Clear (2026-08.3 sheet revision): "Yes" when the Door/
+ *  Curtain Rod choice (B36) contains "Door", "No" when it contains "Rod",
+ *  blank otherwise. Applies to both Tub and Shower, exactly as the live
+ *  sheet's formula reads (it has no Tub/Shower branch). */
+function siliconeClearYes(s){
+  if (TRIM(s.B36) === "") return "";
+  if (SEARCH("Door", s.B36)) return "Yes";
+  if (SEARCH("Rod", s.B36)) return "No";
+  return "";
+}
+
 /* ==========================================================================
    SECTION E — FIELD DEFINITIONS
    One entry per Selection Sheet row, in sheet order.  Declarative on purpose:
@@ -1985,15 +2002,22 @@ const FIELDS = [
       : (EQ(s.B7,"Signature") && (EQ(s.B16,"N/A") || INLIST(CONFIG.Z_sigWallColors, s.B16))) ? null
       : (EQ(s.B7,"Lifestyle") && INLIST(CONFIG.AH_trimColors, s.B16)) ? null
       : "Not a valid perimeter trim colour for the selected wall system." },
-  { cell:"B17", section:"WALL", label:"T Trim", type:"text", unused:true },
-  { cell:"B18", section:"WALL", label:"Lifestyle wall Trim Color", type:"select",
+  /* T Trim (2026-08.3 sheet revision): the live sheet's data-entry cell and
+   * its "T Trim" label are now on the same row (17) — previously the label
+   * sat on row 17 but the actual dropdown/validator/formula all lived one
+   * row down on B18 (a pre-existing off-by-one in the live sheet). G23 was
+   * updated to match, so this cell moves from B18 to B17; B18 is now the
+   * orphaned stub. */
+  { cell:"B17", section:"WALL", label:"T Trim", type:"select",
     options: s => EQ(s.B7,"Lifestyle") ? CONFIG.AH_trimColors : CONFIG.E_patternLifestyle,
-    // C18
-    validate: s => raw(s.B18) === "" ? null
-      : ((EQ(s.B7,"Lifestyle") && INLIST(CONFIG.AH_trimColors, s.B18)) ||
-         (!EQ(s.B7,"Lifestyle") && EQ(s.B18,"N/A"))) ? null
+    // C17
+    validate: s => raw(s.B17) === "" ? null
+      : ((EQ(s.B7,"Lifestyle") && INLIST(CONFIG.AH_trimColors, s.B17)) ||
+         (!EQ(s.B7,"Lifestyle") && EQ(s.B17,"N/A"))) ? null
       : EQ(s.B7,"Lifestyle") ? "Not a valid Lifestyle trim colour."
                              : "Trim colours only apply to the Lifestyle system — choose N/A." },
+  { cell:"B18", section:"WALL", label:"T Trim (unused)", type:"text", unused:true,
+    hint:"Orphaned in the live sheet since the 2026-08.3 revision — T Trim's real cell moved to B17 above." },
   { cell:"B19", section:"WALL", label:"Ceiling Panel", type:"text", unused:true },
   { cell:"B20", section:"WALL", label:"Ceiling Panel Color", type:"text", unused:true },
   { cell:"B21", section:"WALL", label:"Window Kit", type:"select",
@@ -2139,8 +2163,15 @@ const FIELDS = [
   { cell:"B51", section:"ACCESSORIES", label:"Caddy", type:"select",
     // Config!BG2
     options: s => TRIM(s.B7) === "Signature" ? CONFIG.BC_caddyOptions : ["N/A"] },
-  { cell:"B52", section:"ACCESSORIES", label:"Soap Dish", type:"text", unused:true,
-    hint:"Orphaned label in the live sheet (no formula behind it) — kept as a reference-only placeholder." },
+  /* B52 (2026-08.3 sheet revision): the live sheet repurposed this previously
+   * orphaned "Soap Dish" label/cell into a real "Foot pedestal" colour picker
+   * — see G33 in SECTION G for the new model number this feeds. */
+  { cell:"B52", section:"ACCESSORIES", label:"Foot Pedestal Color", type:"select",
+    options: () => CONFIG.BR_footPedestalColors,
+    // C52
+    validate: s => raw(s.B52) === "" ? null
+      : INLIST(CONFIG.BR_footPedestalColors, s.B52) ? null
+      : "Not a valid foot pedestal colour." },
   { cell:"B53", section:"ACCESSORIES", label:"Silicone Color", type:"select",
     options: siliconeColorOptions,
     hint:"Auto-set from the Back Wall Color (Config BD→BF table); can be overridden.",
@@ -2148,12 +2179,15 @@ const FIELDS = [
     validate: s => raw(s.B10) === "" ? null
       : CONFIG.siliconeTable.some(r => EQ(r.code, TRIM(s.B10))) ? null
       : "Back Wall Color \"" + TRIM(s.B10) + "\" has no silicone colour mapping." },
-  { cell:"B54", section:"ACCESSORIES", label:"Silicone Clear", type:"select",
-    options: () => ["Yes","No"],
-    hint:"Adds SP-SLN-CLR. (No dropdown exists in the Excel; the formula only tests for \"Yes\".)" },
-  /* B55/B56 (added 2026-08, moved from B52/B53 in this revision): Signature-only
-   * Tigris Soap Dish + colour — see G30 in SECTION G for the model number this
-   * feeds. Distinct from the orphaned, still-unused B52 "Soap Dish" row above. */
+  /* B54 (2026-08.3 sheet revision): the live sheet now computes this itself —
+   * "Yes" when the Door/Curtain Rod choice (B36) contains "Door", "No" when
+   * it contains "Rod" — for BOTH Tub and Shower, applied here exactly as
+   * written per an explicit 2026-08 confirmation. It's no longer a manual
+   * dropdown; see siliconeClearYes() and G41 (Silicone 2 clear) below. */
+  /* B55/B56 (added 2026-08, moved from B52/B53 in an earlier revision): Signature-
+   * only Tigris Soap Dish + colour — see G30 in SECTION G for the model number
+   * this feeds. Distinct from the Foot Pedestal picker now on B52 above (which,
+   * despite the "Soap Dish" name collision in an older revision, is unrelated). */
   { cell:"B55", section:"ACCESSORIES", label:"Soap Dish", type:"select",
     options: s => EQ(s.B7,"Signature") ? ["Tigris Soap Dish","N/A"] : ["N/A"],
     // C55
@@ -2406,7 +2440,7 @@ const LINE_ITEMS = [
      Rewritten for the 2026-08 sheet revision: B16 is now a real colour code
      for BOTH systems (was a Signature-only Yes/N-A toggle paired with the
      Back Wall Color) — Signature: exact match "CT-175-<B16>"; Lifestyle:
-     "PX96E<B16>", same shape T Trim (G23, still on B18) already used. */
+     "PX96E<B16>", same shape T Trim (G23, on B17) already used. */
   { row:22, label:"Perimeter Edge Trim", qty:() => 4,
     models(s){
       if (raw(s.B16) === "" || EQ(s.B16,"N/A")) return BLANK;
@@ -2417,11 +2451,13 @@ const LINE_ITEMS = [
       return BLANK;
     } },
 
-  /* --- G23 : T Trim  (no quantity in the Excel) ---------------------------- */
+  /* --- G23 : T Trim  (no quantity in the Excel) -----------------------------
+     2026-08.3 sheet revision: G23 now reads B17 (was B18) — see the B17/B18
+     comment in FIELDS above. */
   { row:23, label:"T Trim", qty:() => null, noQtyInExcel:true,
     models(s){
-      if (TRIM(s.B7) !== "Lifestyle" || TRIM(s.B18) === "" || TRIM(s.B18) === "N/A") return BLANK;
-      return FILTER_CATALOG(it => SEARCH("PX96T" + TRIM(s.B18), it.m));
+      if (TRIM(s.B7) !== "Lifestyle" || TRIM(s.B17) === "" || TRIM(s.B17) === "N/A") return BLANK;
+      return FILTER_CATALOG(it => SEARCH("PX96T" + TRIM(s.B17), it.m));
     } },
 
   /* --- G24 : Caddy --------------------------------------------------------- */
@@ -2514,11 +2550,26 @@ const LINE_ITEMS = [
       return FILTER_CATALOG(it => EQ(TRIM(it.m), "SP-SLN-" + code));
     } },
 
-  /* --- G41 : Silicone 2 (clear) -------------------------------------------- */
+  /* --- G41 : Silicone 2 (clear) --------------------------------------------
+     2026-08.3 sheet revision: B54 is no longer a manual dropdown — it's
+     derived from the Door/Curtain Rod choice (B36) via siliconeClearYes(),
+     applied for both Tub and Shower exactly as the live formula reads. */
   { row:41, label:"Silicone 2 (clear)", qty:() => 1,
     models(s){
-      if (TRIM(s.B54) !== "Yes") return BLANK;
+      if (siliconeClearYes(s) !== "Yes") return BLANK;
       return FILTER_CATALOG(it => EQ(TRIM(it.m), "SP-SLN-CLR"));
+    } },
+
+  /* --- G33 : Foot Pedestal (new 2026-08.3 sheet revision) -------------------
+     A colour picker (B52, including N/A) exactly like Perimeter Edge Trim's
+     B16 — no separate Yes/No toggle in the live sheet. Exact-match lookup
+     against "FX-CFP-<color>"; qty defaults to 1 like every other single-unit
+     optional accessory (I33 in the Excel is a blank->1 formula, same shape
+     as Caddy/Soap Dish/Grab Shelf). */
+  { row:33, label:"Foot Pedestal", qty:(s, h, res) => res.models.length ? 1 : null,
+    models(s){
+      if (TRIM(s.B52) === "" || TRIM(s.B52) === "N/A") return BLANK;
+      return FILTER_CATALOG(it => EQ(TRIM(it.m), "FX-CFP-" + TRIM(s.B52)));
     } }
 ];
 
