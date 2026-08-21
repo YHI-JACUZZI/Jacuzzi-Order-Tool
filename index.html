@@ -1719,6 +1719,12 @@ function computeHelpers(s){
   h.E12 = N(s.B12) <= 60 ? 72 : 108;                                 // (unused by any model formula)
   h.E13 = N(s.B13) <= 35 ? 36 : 48;                                  // (unused)
   h.E14 = N(s.B14) <= 96 ? 96 : 108;                                 // Lifestyle panel height
+  // E15/E16 (added 2026-08.4 sheet revision): "=2+IF(Lifestyle AND Ceiling
+  // Panel=Yes, 3 or 1, 0)". Confirmed via a full-workbook reference scan that
+  // nothing reads E15 or E16 — no other cell, including every G/I formula —
+  // so, like E12/E13, these are carried only for parity with the live sheet.
+  h.E15 = 2 + (EQ(s.B7,"Lifestyle") && EQ(s.B19,"Yes") ? 3 : 0);      // (unused by any model formula)
+  h.E16 = 2 + (EQ(s.B7,"Lifestyle") && EQ(s.B19,"Yes") ? 1 : 0);      // (unused)
 
   /* ---- Config!R2:R9 — base (tub / shower pan) lookup keys -------------- */
   // R2: type keyword
@@ -1857,6 +1863,16 @@ function windowKitColorOptions(s){
   if (wk === "" || wk === "no") return ["N/A"];
   if (EQ(s.B7, "Signature")) return CONFIG.Z_sigWallColors;
   if (EQ(s.B7, "Lifestyle")) return CONFIG.AA_lifeWallColors;
+  return ["N/A"];
+}
+
+/** B20 — ceiling panel colour (2026-08.4 sheet revision). Only meaningful for
+ *  Signature: Lifestyle's ceiling panel automatically reuses the Wall Back
+ *  panel/colour (see the Ceiling Panel line item below), and G34 never reads
+ *  B20 on that branch at all. */
+function ceilingPanelColorOptions(s){
+  if (!EQ(s.B19, "Yes")) return ["N/A"];
+  if (EQ(s.B7, "Signature")) return CONFIG.Z_sigWallColors;
   return ["N/A"];
 }
 
@@ -2016,10 +2032,24 @@ const FIELDS = [
          (!EQ(s.B7,"Lifestyle") && EQ(s.B17,"N/A"))) ? null
       : EQ(s.B7,"Lifestyle") ? "Not a valid Lifestyle trim colour."
                              : "Trim colours only apply to the Lifestyle system — choose N/A." },
-  { cell:"B18", section:"WALL", label:"T Trim (unused)", type:"text", unused:true,
-    hint:"Orphaned in the live sheet since the 2026-08.3 revision — T Trim's real cell moved to B17 above." },
-  { cell:"B19", section:"WALL", label:"Ceiling Panel", type:"text", unused:true },
-  { cell:"B20", section:"WALL", label:"Ceiling Panel Color", type:"text", unused:true },
+  /* B18 (2026-08.4 sheet revision): the live sheet repurposed this row's A/B/C
+   * columns again — it's no longer the orphaned T Trim stub, it's now
+   * "Corner Reinforcement", a pure formula mirroring the Wall System Type
+   * ("Yes" for Signature, "No" for Lifestyle, always via B7 — never a manual
+   * choice; there's no dropdown for it in the live sheet either). Confirmed
+   * via a full-workbook scan that nothing downstream reads B18 — the actual
+   * product line this describes ("Inside Corner Reinforcement" below) checks
+   * B7 directly, not B18 — so there's no FIELDS entry for it: nothing to
+   * select, and the app already surfaces the real result as a product line.
+   * (C18's own validator is also stale cruft left over from the old T Trim
+   * row — it still checks B18 against Lifestyle trim colours, which will
+   * never match "Yes"/"No"; not worth porting a validator that's always
+   * wrong.) */
+  { cell:"B19", section:"WALL", label:"Ceiling Panel", type:"select",
+    options: () => ["Yes","No"] },
+  { cell:"B20", section:"WALL", label:"Ceiling Panel Color", type:"select",
+    options: ceilingPanelColorOptions,
+    hint:"Only used for Signature — a Lifestyle ceiling panel automatically matches the Wall Back panel." },
   { cell:"B21", section:"WALL", label:"Window Kit", type:"select",
     options: () => ["yes","no"] },
   { cell:"B22", section:"WALL", label:"Window Kit Color", type:"select",
@@ -2045,7 +2075,11 @@ const FIELDS = [
         return INLIST(CONFIG.J_bathTubs, s.B26) ? null : "Not a stock bathtub size.";
       return INLIST(CONFIG.J_bathTubs, s.B26) ? "A bathtub size cannot be used with this pan type." : null;
     } },
-  { cell:"B27", section:"BASE", label:"Custom Pan Dimensions", type:"text", unused:true },
+  /* flagRed: no model-number formula reads this cell, but it's a manual flag
+   * for something the shop needs to notice — a hand-cut custom size, not a
+   * catalog pick. When filled in, the Cut Sheet PDF renders its value in red
+   * so it can't be missed. */
+  { cell:"B27", section:"BASE", label:"Custom Pan Dimensions", type:"text", unused:true, flagRed:true },
   { cell:"B28", section:"BASE", label:"Tub / Pan Color", type:"select",
     options: () => CONFIG.K_tubPanColors },
   { cell:"B29", section:"BASE", label:"Tub Skirt Type", type:"select",
@@ -2266,6 +2300,19 @@ function logExportToHistory(snap, exportType){
 /** Catalog helper: several filters exclude the "YC-" prefixed items. */
 const notYC = it => it.m.slice(0,3).toUpperCase() !== "YC-";
 
+/** G9 : Wall Back's own model lookup, factored out so the new Ceiling Panel
+ *  line item (G34, 2026-08.4 sheet revision) can reuse it verbatim on its
+ *  Lifestyle branch — the live sheet's G34 formula literally reads "=$G$9"
+ *  in that case, i.e. "whatever Wall Back resolved to". */
+function wallBackModels(s, h){
+  if (isErr(h.R13)) return errResult("Surround Height over 96\" is not supported by the wall lookup (Excel returns #NAME?).");
+  if (h.R10 === "" || h.R12 === "" || h.R13 === "") return BLANK;
+  const prefix = EQ(s.B7,"Signature") ? "-" : "";
+  return FILTER_CATALOG(it => SEARCH(h.R10, it.g) &&
+                              SEARCH(prefix + h.R12, it.m) &&
+                              SEARCH(h.R13, it.m));
+}
+
 const LINE_ITEMS = [
   /* --- G6 : Base (tub or shower pan) ---------------------------------- */
   { row:6, label:"Base", qty:() => 1,
@@ -2317,14 +2364,7 @@ const LINE_ITEMS = [
       if (h.R12 === "SC" && h.backWallLen > 59 && h.backWallLen <= 64) return 2;
       return 1;
     },
-    models(s, h){
-      if (isErr(h.R13)) return errResult("Surround Height over 96\" is not supported by the wall lookup (Excel returns #NAME?).");
-      if (h.R10 === "" || h.R12 === "" || h.R13 === "") return BLANK;
-      const prefix = EQ(s.B7,"Signature") ? "-" : "";
-      return FILTER_CATALOG(it => SEARCH(h.R10, it.g) &&
-                                  SEARCH(prefix + h.R12, it.m) &&
-                                  SEARCH(h.R13, it.m));
-    } },
+    models(s, h){ return wallBackModels(s, h); } },
 
   /* --- G10 : Side Wall -------------------------------------------------- */
   { row:10, label:"Side Wall", qty:() => 2,
@@ -2513,6 +2553,23 @@ const LINE_ITEMS = [
       return FILTER_CATALOG(it => EQ(TRIM(it.m), prefix + TRIM(s.B56)));
     } },
 
+  /* --- G31 : Inside Corner Reinforcement (new 2026-08.4 sheet revision) ----
+     Signature-only, auto-added — CR-96-ONE for every Signature job, no
+     dropdown involved (reads $B$7 directly, exactly like the live formula).
+     This is the same CR-96-ONE piece Signature used to auto-get through the
+     "Inside Corner Trim" row before that branch was removed (2026-08.2
+     confirmation); the live sheet has now reintroduced it as its own,
+     explicitly-named line item instead of folding it back into Inside Corner
+     Trim. B18 ("Corner Reinforcement") mirrors this same Signature/Lifestyle
+     condition for display, but isn't actually read by this formula — see the
+     B18 comment in FIELDS. The Excel has no quantity formula for this row
+     (I31 is blank), like Diverter valve/Trim and T Trim. */
+  { row:31, label:"Inside Corner Reinforcement", qty:() => null, noQtyInExcel:true,
+    models(s){
+      if (!EQ(s.B7,"Signature")) return BLANK;
+      return FILTER_CATALOG(it => SEARCH("CR-96-ONE", it.m));
+    } },
+
   /* --- G32 : Grab Shelf (new 2026-08.2 sheet revision) ----------------------
      A standalone Yes/No + Size + Color ordering path that resolves to the
      exact same PP588xx/PP578xx SKUs already reachable via the Shelves
@@ -2570,6 +2627,20 @@ const LINE_ITEMS = [
     models(s){
       if (TRIM(s.B52) === "" || TRIM(s.B52) === "N/A") return BLANK;
       return FILTER_CATALOG(it => EQ(TRIM(it.m), "FX-CFP-" + TRIM(s.B52)));
+    } },
+
+  /* --- G34 : Ceiling Panel (new 2026-08.4 sheet revision) -------------------
+     Only appears when B19 = "Yes". Lifestyle reuses Wall Back's own result
+     outright (the live formula literally reads "=$G$9" on that branch — see
+     wallBackModels() above); Signature looks up the "Ceiling Panels" category
+     by colour (B20). The Excel has no quantity formula for this row (I34 is
+     blank), like Diverter valve/Trim, T Trim and Inside Corner Reinforcement. */
+  { row:34, label:"Ceiling Panel", qty:() => null, noQtyInExcel:true,
+    models(s, h){
+      if (!EQ(s.B19,"Yes")) return BLANK;
+      if (EQ(s.B7,"Lifestyle")) return wallBackModels(s, h);
+      if (TRIM(s.B20) === "" || TRIM(s.B20) === "N/A") return BLANK;
+      return FILTER_CATALOG(it => SEARCH("Ceiling Panels", it.g) && SEARCH("-" + TRIM(s.B20), it.m));
     } }
 ];
 
@@ -3022,7 +3093,7 @@ function exportSnapshot(){
     if (v === "") continue;
     let sec = bySection.get(f.section);
     if (!sec){ sec = { name:f.section, fields:[] }; bySection.set(f.section, sec); sections.push(sec); }
-    sec.fields.push({ label:f.label, cell:f.cell, value:v });
+    sec.fields.push({ label:f.label, cell:f.cell, value:v, flagRed: !!f.flagRed });
   }
 
   // Roll-up totals — same arithmetic as the on-screen summary bar.
@@ -3450,9 +3521,9 @@ function buildCutSheetPdfBook(snap){
         {text:"Selection", bold:true, shade:HEAD_SHADE}
       ];
       const rows = sec.fields.map(f => [
-        {text:f.label, shade:LBL_SHADE},
+        {text:f.label, shade:LBL_SHADE, color: f.flagRed ? "B3261E" : null},
         {text:f.cell, color:"93A0AC"},
-        {text:f.value, bold:true}
+        {text:f.value, bold:true, color: f.flagRed ? "B3261E" : null}
       ]);
       pdfTable(book, header, rows, widths);
     }
