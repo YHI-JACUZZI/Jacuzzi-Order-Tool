@@ -706,6 +706,17 @@ const CATALOG = [
 {"g": "Soap Dishes; Stainless Steel Soap Dish", "m": "PP72826", "d": "BN 8 Inch Stainless Steel Soap Dish", "len": 8, "w": null, "c": 86.1},
 {"g": "Soap Dishes; Stainless Steel Soap Dish", "m": "PP72827", "d": "CH 8 Inch Stainless Steel Soap Dish", "len": 8, "w": null, "c": 103.95},
 {"g": "Soap Dishes; Stainless Steel Soap Dish", "m": "PP72845", "d": "ORB 8 Inch Stainless Steel Soap Dish", "len": 8, "w": null, "c": 77.7},
+{"g": "Window Kits and Misc Wall Caps; Signature Window Kits", "m": "FX-WIN-AW", "d": "AW Window Kit", "len": null, "w": null, "c": 150.15},
+{"g": "Window Kits and Misc Wall Caps; Signature Window Kits", "m": "FX-WIN-CF", "d": "CF Window Kit", "len": null, "w": null, "c": 190.05},
+{"g": "Window Kits and Misc Wall Caps; Signature Window Kits", "m": "FX-WIN-CT", "d": "CT Window Kit", "len": null, "w": null, "c": 190.05},
+{"g": "Window Kits and Misc Wall Caps; Signature Window Kits", "m": "FX-WIN-MS", "d": "MS Window Kit", "len": null, "w": null, "c": 190.05},
+{"g": "Window Kits and Misc Wall Caps; Signature Window Kits", "m": "FX-WIN-MW", "d": "MW Window Kit", "len": null, "w": null, "c": 150.15},
+{"g": "Window Kits and Misc Wall Caps; Signature Window Kits", "m": "FX-WIN-PG", "d": "PG Window Kit", "len": null, "w": null, "c": 150.15},
+{"g": "Window Kits and Misc Wall Caps; Signature Window Kits", "m": "FX-WIN-QT", "d": "QT Window Kit", "len": null, "w": null, "c": 150.15},
+{"g": "Window Kits and Misc Wall Caps; Signature Window Kits", "m": "FX-WIN-SB", "d": "SB Window Kit", "len": null, "w": null, "c": 150.15},
+{"g": "Window Kits and Misc Wall Caps; Signature Window Kits", "m": "FX-WIN-SC", "d": "SC Window Kit", "len": null, "w": null, "c": 190.05},
+{"g": "Window Kits and Misc Wall Caps; Signature Window Kits", "m": "FX-WIN-SM", "d": "SM Window Kit", "len": null, "w": null, "c": 190.05},
+{"g": "Window Kits and Misc Wall Caps; Signature Window Kits", "m": "FX-WIN-WM", "d": "WM Window Kit", "len": null, "w": null, "c": 190.05},
 {"g": "Shower Seats; White Fold Down Shower Seat", "m": "SS17959", "d": "WHT Fold Down Shower Seat", "len": null, "w": null, "c": 305.55},
 {"g": "Shower Seats; Hanging Teak Seat", "m": "FX-HANGST-BN", "d": "BN Hanging Teak Shower Seat", "len": null, "w": null, "c": 514.5},
 {"g": "Shower Seats; Hanging Teak Seat", "m": "FX-HANGST-CH", "d": "CH Hanging Teak Shower Seat", "len": null, "w": null, "c": 558.6},
@@ -1690,6 +1701,7 @@ function isErr(v){ return v === ERRV; }
  *  literal string Excel puts in the cell when nothing matched — it is NOT blank,
  *  so it still flows through to the output sheet. */
 const NO_MATCH = "No exact match found";
+const CUSTOM_PAN_MSG = "MUST ADD CUSTOM PAN TO ORDER!";
 function FILTER_CATALOG(pred){
   const items = CATALOG.filter(pred);
   if (items.length === 0) return { models:[NO_MATCH], items:[], noMatch:true };
@@ -1717,7 +1729,7 @@ function computeHelpers(s){
   h.D13 = N(s.B13) <= 37 ? 38 : (N(s.B13) > 48 ? ERRV : false);      // bent side wall depth token
   h.D14 = N(s.B14) <= 96 ? 97 : ERRV;                                // wall height token
   h.E12 = N(s.B12) <= 60 ? 72 : 108;                                 // (unused by any model formula)
-  h.E13 = N(s.B13) <= 35 ? 36 : 48;                                  // (unused)
+  h.E13 = N(s.B13) <= 35 ? 36 : 48;                                  // Lifestyle side wall width (R14, 2026-09-28)
   h.E14 = N(s.B14) <= 96 ? 96 : 108;                                 // Lifestyle panel height
   // E15/E16 (added 2026-08.4 sheet revision): "=2+IF(Lifestyle AND Ceiling
   // Panel=Yes, 3 or 1, 0)". Confirmed via a full-workbook reference scan that
@@ -1766,25 +1778,25 @@ function computeHelpers(s){
   // R12: effective back wall colour
   h.R12 = h.R11 !== "" ? h.R11 : B("B10");
   // R13: wall size token
-  //   Business rule (confirmed 2026-08, overrides the raw D12&D14 concatenation,
-  //   which produced a "6997" search that matches no real catalog SKU):
-  //     - Back Wall length > 64"  -> always the 69x102 panel, one panel, any color
-  //       (catalog only stocks a 69"-wide flat wall at 102" tall, e.g. WF-69102-AW).
-  //     - Back Wall length <= 64" and color = SC (Savannah Cove), length > 59"
-  //       -> SC has no 65"-wide panel in this size range, so two 60x97 (WF-6097-SC)
-  //       panels are used instead of one 65"-wide panel (see qty on row 9 below).
-  //     - otherwise (<=64", not the SC gap case) -> normal D12&D14 token (e.g. "6597").
+  //   2026-09-28 sheet revision: the live Config!R13 is now "65"&D14 for every
+  //   Signature job — the old 69x102 single-panel rule for walls over 64" is
+  //   gone. Wide back walls are now TWO 65x97 panels joined by a seam trim
+  //   (qty on row 9, Seam Trim on row 35 below).
+  //   Deliberate divergence (kept 2026-09-28): SC (Savannah Cove) has no 65"
+  //   flat wall at all, so SC keeps using the 60x97 panel (WF-6097-SC) instead
+  //   of resolving to "No exact match" — see wallBackQty() for its qty.
   h.backWallLen = N(s.B12);
-  h.R13 = sig  ? (h.backWallLen > 64 ? "69102"
-                : (h.R12 === "SC" && h.backWallLen > 59) ? "6097"
-                : (isErr(h.D14) ? ERRV : "" + h.D12 + h.D14))
+  h.R13 = sig  ? (isErr(h.D14) ? ERRV : (h.R12 === "SC" ? "6097" : "65" + h.D14))
         : life ? (h.E14 === 96 ? "PW360" : h.E14 === 108 ? "PW936" : "") : "";
   const sideLetter = sig ? LOOKUP(CONFIG.patternTable, "pattern", B("B9"), "sideLetter") : "";
   const sideColor  = h.R11 !== "" ? "AG" : B("B11");
   // R14: side wall search string
+  //   2026-09-28: Lifestyle side walls deeper than 35" (E13 = 48) now use the
+  //   48"-wide panel (PW480) at 96" height; 108" height is unchanged.
   if (life){
     h.R14 = (B("B11") === "" || h.E14 === "") ? ""
-          : (h.E14 === 96 ? "PW360" + B("B11") : h.E14 === 108 ? "PW936" + B("B11") : "");
+          : (h.E14 === 96 ? (h.E13 === 48 ? "PW480" : "PW360") + B("B11")
+            : h.E14 === 108 ? "PW936" + B("B11") : "");
   } else if (!sig || B("B9") === ""){
     h.R14 = "";
   } else if (isErr(h.D13) || isErr(h.D14)){
@@ -1797,18 +1809,18 @@ function computeHelpers(s){
         ? "WF-6597" + sideLetter + "-" + sideColor : "";
 
   /* ---- Config!AY2:AY3 — shelf model prefix + colour token -------------- */
-  const shelf = T("B46");
+  const shelf = T("B47");
   h.AY2 = shelf === "Signature Prairie Corner Shelf"       ? "CS-SHLF-"
         : shelf === "Signature Stone Prairie Corner Shelf" ? "CS-SHLFR-"
         : shelf === "10in Stainless Steel Corner Shelf"    ? "PP738"
         : shelf === "30in Grab Bar Shelf"                  ? "PP578"
         : shelf === "20in Grab Shelf"                      ? "PP588" : "";
-  if (h.AY2 === "" || T("B47") === "" || T("B47") === "N/A"){
+  if (h.AY2 === "" || T("B48") === "" || T("B48") === "N/A"){
     h.AY3 = "";
   } else if (h.AY2.slice(0,2) === "CS"){
-    h.AY3 = T("B47") === "Match Back Wall Color" ? T("B10") : T("B47");
+    h.AY3 = T("B48") === "Match Back Wall Color" ? T("B10") : T("B48");
   } else {
-    h.AY3 = LOOKUP(CONFIG.metalSuffix, "color", T("B47"), "suffix");
+    h.AY3 = LOOKUP(CONFIG.metalSuffix, "color", T("B48"), "suffix");
   }
 
   return h;
@@ -1839,9 +1851,9 @@ function seatTopOptions(){
                        .filter(v => v !== null));
 }
 
-/** Config!AM2 — seat colours, driven by the seat style in B38. */
+/** Config!AM2 — seat colours, driven by the seat style in B39. */
 function seatColorOptions(s){
-  const t = TRIM(s.B38);
+  const t = TRIM(s.B39);
   if (t === "Folding Teak")  return ["BN","MB","CH"];
   if (t === "Hanging Teak")  return ["BN","CH"];
   if (t === "Folding White") return ["N/A"];
@@ -1890,6 +1902,15 @@ function drainLocationOptions(s){
   return [];
 }
 
+/** B35 — Shower Head Upgrade (2026-09-28). Config!BS2:
+ *  IF(OR(B33="Aperto",B33="Vazia"), {"Rain Shower Head";"N/A"}, "N/A") */
+function rainHeadAvailable(s){
+  return TRIM(s.B33) === "Aperto" || TRIM(s.B33) === "Vazia";
+}
+function showerHeadUpgradeOptions(s){
+  return rainHeadAvailable(s) ? ["Rain Shower Head","N/A"] : ["N/A"];
+}
+
 /** B26 — tub / pan dimensions.  Config!M2 spills G ∪ H ∪ I (all shower pans). */
 function panDimensionOptions(s){
   const t = TRIM(s.B25);
@@ -1899,9 +1920,9 @@ function panDimensionOptions(s){
   return [];
 }
 
-/** B47 — shelf colours, driven by the shelf style in B46. */
+/** B48 — shelf colours, driven by the shelf style in B47. */
 function shelfColorOptions(s){
-  const t = TRIM(s.B46);
+  const t = TRIM(s.B47);
   if (t === "Signature Prairie Corner Shelf" || t === "Signature Stone Prairie Corner Shelf")
     return CONFIG.AT_shelfColorsPrairie;
   if (t === "10in Stainless Steel Corner Shelf") return CONFIG.AU_shelfColorsStainless;
@@ -1909,7 +1930,7 @@ function shelfColorOptions(s){
   return ["N/A"];
 }
 
-/** B42 / B44 — grab bar lengths, driven by the matching style cell. */
+/** B43 / B45 — grab bar lengths, driven by the matching style cell. */
 function grabBarLengthOptions(styleValue){
   const t = TRIM(styleValue);
   if (t === "N/A") return ["N/A"];
@@ -1918,7 +1939,7 @@ function grabBarLengthOptions(styleValue){
   return CONFIG.AR_gripGrabLengths;
 }
 
-/** B53 — silicone colour.  The Excel cell has no dropdown (see spec_notes.md
+/** B54 — silicone colour.  The Excel cell has no dropdown (see spec_notes.md
  *  "Approximations" #1); we offer the distinct Config!BF values. */
 function siliconeColorOptions(){
   return unique(CONFIG.siliconeTable.map(r => r.silicone));
@@ -1928,14 +1949,14 @@ function siliconeForWallColor(s){
   return LOOKUP(CONFIG.siliconeTable, "code", TRIM(s.B10), "silicone");
 }
 
-/** B54 — Silicone Clear (2026-08.3 sheet revision): "Yes" when the Door/
- *  Curtain Rod choice (B36) contains "Door", "No" when it contains "Rod",
+/** B55 — Silicone Clear (2026-08.3 sheet revision): "Yes" when the Door/
+ *  Curtain Rod choice (B37) contains "Door", "No" when it contains "Rod",
  *  blank otherwise. Applies to both Tub and Shower, exactly as the live
  *  sheet's formula reads (it has no Tub/Shower branch). */
 function siliconeClearYes(s){
-  if (TRIM(s.B36) === "") return "";
-  if (SEARCH("Door", s.B36)) return "Yes";
-  if (SEARCH("Rod", s.B36)) return "No";
+  if (TRIM(s.B37) === "") return "";
+  if (SEARCH("Door", s.B37)) return "Yes";
+  if (SEARCH("Rod", s.B37)) return "No";
   return "";
 }
 
@@ -2109,132 +2130,144 @@ const FIELDS = [
     options: () => CONFIG.AI_valveTrimStyle },
   { cell:"B34", section:"FIXTURES", label:"Valve / Head Color", type:"select",
     options: () => CONFIG.W_valveHeadColors },
-  { cell:"B35", section:"FIXTURES", label:"Shower Spa", type:"select",
+  /* B35 (new 2026-09-28 sheet revision): Shower Head Upgrade. Every row from
+   * the old B35 (Shower Spa) down moved one row to make room. Options mirror
+   * Config!BS2 — Rain Shower Head is only offered for Aperto/Vazia valve
+   * designs (the only two with a "Rain Shower Heads" catalog group). G13 reads
+   * this to switch the standard shower head to its rain version. */
+  { cell:"B35", section:"FIXTURES", label:"Shower Head Upgrade", type:"select",
+    options: showerHeadUpgradeOptions,
+    // C35
+    validate: s => raw(s.B35) === "" ? null
+      : ((rainHeadAvailable(s) && (EQ(TRIM(s.B35),"Rain Shower Head") || EQ(TRIM(s.B35),"N/A"))) ||
+         (!rainHeadAvailable(s) && EQ(TRIM(s.B35),"N/A"))) ? null
+      : "Rain shower head is only available with the Aperto or Vazia valve design — choose N/A." },
+  { cell:"B36", section:"FIXTURES", label:"Shower Spa", type:"select",
     options: () => CONFIG.AJ_showerSpa },
-  { cell:"B36", section:"FIXTURES", label:"Door / Curtain Rod", type:"select",
+  { cell:"B37", section:"FIXTURES", label:"Door / Curtain Rod", type:"select",
     options: s => doorRodOptions(TRIM(s.B6) === "Tub"),
     // C36
-    validate: s => TRIM(s.B36) === "" ? null
-      : INLIST(doorRodOptions(TRIM(s.B6) === "Tub"), TRIM(s.B36)) ? null
+    validate: s => TRIM(s.B37) === "" ? null
+      : INLIST(doorRodOptions(TRIM(s.B6) === "Tub"), TRIM(s.B37)) ? null
       : "Not available for a " + (TRIM(s.B6) === "Tub" ? "tub" : "shower") + "." },
-  { cell:"B37", section:"FIXTURES", label:"Door / Curtain Rod Color", type:"select",
+  { cell:"B38", section:"FIXTURES", label:"Door / Curtain Rod Color", type:"select",
     options: () => CONFIG.W_valveHeadColors },
-  { cell:"B38", section:"FIXTURES", label:"Seat", type:"select",
+  { cell:"B39", section:"FIXTURES", label:"Seat", type:"select",
     options: () => CONFIG.AL_seats },
-  { cell:"B39", section:"FIXTURES", label:"Seat Color", type:"select",
+  { cell:"B40", section:"FIXTURES", label:"Seat Color", type:"select",
     options: seatColorOptions,
     // C39
-    validate: s => raw(s.B39) === "" ? null
-      : INLIST(seatColorOptions(s), s.B39) ? null : "Not a valid colour for the selected seat." },
-  { cell:"B40", section:"FIXTURES", label:"Seat Top", type:"select",
-    options: s => TRIM(s.B38) === "Bench wrap and top" ? seatTopOptions() : [],
-    // C40
     validate: s => raw(s.B40) === "" ? null
-      : INLIST(seatTopOptions(), s.B40) ? null : "Seat top only applies to a bench wrap and top." },
-  { cell:"B41", section:"FIXTURES", label:"Grab Bar 1 Style", type:"select",
+      : INLIST(seatColorOptions(s), s.B40) ? null : "Not a valid colour for the selected seat." },
+  { cell:"B41", section:"FIXTURES", label:"Seat Top", type:"select",
+    options: s => TRIM(s.B39) === "Bench wrap and top" ? seatTopOptions() : [],
+    // C40
+    validate: s => raw(s.B41) === "" ? null
+      : INLIST(seatTopOptions(), s.B41) ? null : "Seat top only applies to a bench wrap and top." },
+  { cell:"B42", section:"FIXTURES", label:"Grab Bar 1 Style", type:"select",
     options: () => ["Deluxe","Grab Bar with Grips","N/A"] },
-  { cell:"B42", section:"FIXTURES", label:"Grab Bar 1 Length", type:"select",
-    options: s => grabBarLengthOptions(s.B41) },
-  { cell:"B43", section:"FIXTURES", label:"Grab Bar 2 Style", type:"select",
+  { cell:"B43", section:"FIXTURES", label:"Grab Bar 1 Length", type:"select",
+    options: s => grabBarLengthOptions(s.B42) },
+  { cell:"B44", section:"FIXTURES", label:"Grab Bar 2 Style", type:"select",
     options: () => ["Deluxe","Grab Bar with Grips","N/A"] },
-  { cell:"B44", section:"FIXTURES", label:"Grab Bar 2 Length", type:"select",
-    options: s => grabBarLengthOptions(s.B43) },
+  { cell:"B45", section:"FIXTURES", label:"Grab Bar 2 Length", type:"select",
+    options: s => grabBarLengthOptions(s.B44) },
 
   /* ------------------------------------------------------ ACCESSORIES --- */
-  { cell:"B46", section:"ACCESSORIES", label:"Shelves", type:"select",
+  { cell:"B47", section:"ACCESSORIES", label:"Shelves", type:"select",
     options: () => CONFIG.AS_shelfOptions,
     // C46
-    validate: s => raw(s.B46) === "" ? null
-      : INLIST(CONFIG.AS_shelfOptions, s.B46) ? null : "Not a valid shelf option." },
-  { cell:"B47", section:"ACCESSORIES", label:"Shelf Color", type:"select",
+    validate: s => raw(s.B47) === "" ? null
+      : INLIST(CONFIG.AS_shelfOptions, s.B47) ? null : "Not a valid shelf option." },
+  { cell:"B48", section:"ACCESSORIES", label:"Shelf Color", type:"select",
     options: shelfColorOptions,
     // C47
     validate: s => {
-      if (raw(s.B47) === "") return null;
-      const t = TRIM(s.B46), v = TRIM(s.B47);
+      if (raw(s.B48) === "") return null;
+      const t = TRIM(s.B47), v = TRIM(s.B48);
       const prairieColors = CONFIG.AT_shelfColorsPrairie.filter(c => c !== "Match Back Wall Color");
       const ok =
         ((t === "Signature Prairie Corner Shelf" || t === "Signature Stone Prairie Corner Shelf") &&
           (v === "Match Back Wall Color" ? INLIST(prairieColors, TRIM(s.B10))
-                                         : INLIST(prairieColors, s.B47))) ||
-        (t === "10in Stainless Steel Corner Shelf" && INLIST(CONFIG.AU_shelfColorsStainless, s.B47)) ||
-        ((t === "30in Grab Bar Shelf" || t === "20in Grab Shelf") && INLIST(CONFIG.AV_shelfColorsGrab, s.B47)) ||
+                                         : INLIST(prairieColors, s.B48))) ||
+        (t === "10in Stainless Steel Corner Shelf" && INLIST(CONFIG.AU_shelfColorsStainless, s.B48)) ||
+        ((t === "30in Grab Bar Shelf" || t === "20in Grab Shelf") && INLIST(CONFIG.AV_shelfColorsGrab, s.B48)) ||
         ((t === "None" || t === "") && v === "N/A");
       if (ok) return null;
       if (v === "Match Back Wall Color")
         return "Back Wall Color (" + (TRIM(s.B10) || "blank") + ") is not available as a shelf colour.";
       return "Not a valid colour for the selected shelf.";
     } },
-  /* B48/B49/B50 (new 2026-08 sheet revision): a standalone "Grab Shelf"
+  /* B49/B50/B51 (new 2026-08 sheet revision): a standalone "Grab Shelf"
    * ordering path — Yes/No, then Size + Color once Yes. This produces the
    * exact same PP588xx/PP578xx SKUs already reachable via the Shelves
-   * (B46/B47) dropdown's "20in Grab Shelf" / "30in Grab Bar Shelf" options;
+   * (B47/B48) dropdown's "20in Grab Shelf" / "30in Grab Bar Shelf" options;
    * built anyway per an explicit 2026-08 confirmation to keep it as a
    * separate path. See G32 in SECTION G. The Excel has no quantity formula
    * for this row (I32 is blank) — defaulted to 1, matching every other
    * single-unit optional accessory (Caddy, Soap Dish, ...). */
-  { cell:"B48", section:"ACCESSORIES", label:"Grab Shelf", type:"select",
+  { cell:"B49", section:"ACCESSORIES", label:"Grab Shelf", type:"select",
     options: () => ["Yes","No"],
     // C48
-    validate: s => raw(s.B48) === "" ? null
-      : INLIST(["Yes","No"], s.B48) ? null : "Must be Yes or No." },
-  { cell:"B49", section:"ACCESSORIES", label:"Grab Shelf Size", type:"select",
-    options: s => EQ(s.B48,"Yes") ? CONFIG.BP_grabShelfSizes : ["N/A"],
-    // C49
     validate: s => raw(s.B49) === "" ? null
-      : ((EQ(s.B48,"Yes") && INLIST(CONFIG.BP_grabShelfSizes, s.B49)) ||
-         (!EQ(s.B48,"Yes") && EQ(s.B49,"N/A"))) ? null
-      : "Grab Shelf Size only applies when Grab Shelf is Yes." },
-  { cell:"B50", section:"ACCESSORIES", label:"Grab Shelf Color", type:"select",
-    options: s => EQ(s.B48,"Yes") ? CONFIG.AV_shelfColorsGrab : ["N/A"],
-    // C50
+      : INLIST(["Yes","No"], s.B49) ? null : "Must be Yes or No." },
+  { cell:"B50", section:"ACCESSORIES", label:"Grab Shelf Size", type:"select",
+    options: s => EQ(s.B49,"Yes") ? CONFIG.BP_grabShelfSizes : ["N/A"],
+    // C49
     validate: s => raw(s.B50) === "" ? null
-      : ((EQ(s.B48,"Yes") && INLIST(CONFIG.AV_shelfColorsGrab, s.B50)) ||
-         (!EQ(s.B48,"Yes") && EQ(s.B50,"N/A"))) ? null
+      : ((EQ(s.B49,"Yes") && INLIST(CONFIG.BP_grabShelfSizes, s.B50)) ||
+         (!EQ(s.B49,"Yes") && EQ(s.B50,"N/A"))) ? null
+      : "Grab Shelf Size only applies when Grab Shelf is Yes." },
+  { cell:"B51", section:"ACCESSORIES", label:"Grab Shelf Color", type:"select",
+    options: s => EQ(s.B49,"Yes") ? CONFIG.AV_shelfColorsGrab : ["N/A"],
+    // C50
+    validate: s => raw(s.B51) === "" ? null
+      : ((EQ(s.B49,"Yes") && INLIST(CONFIG.AV_shelfColorsGrab, s.B51)) ||
+         (!EQ(s.B49,"Yes") && EQ(s.B51,"N/A"))) ? null
       : "Grab Shelf Color only applies when Grab Shelf is Yes." },
-  /* Caddy moved from B48 -> B51 in the 2026-08 sheet revision (rows 51-56
+  /* Caddy moved from B49 -> B52 in the 2026-08 sheet revision (rows 51-56
    * below), to make room for the new Grab Shelf block above. */
-  { cell:"B51", section:"ACCESSORIES", label:"Caddy", type:"select",
+  { cell:"B52", section:"ACCESSORIES", label:"Caddy", type:"select",
     // Config!BG2
     options: s => TRIM(s.B7) === "Signature" ? CONFIG.BC_caddyOptions : ["N/A"] },
-  /* B52 (2026-08.3 sheet revision): the live sheet repurposed this previously
+  /* B53 (2026-08.3 sheet revision): the live sheet repurposed this previously
    * orphaned "Soap Dish" label/cell into a real "Foot pedestal" colour picker
    * — see G33 in SECTION G for the new model number this feeds. */
-  { cell:"B52", section:"ACCESSORIES", label:"Foot Pedestal Color", type:"select",
+  { cell:"B53", section:"ACCESSORIES", label:"Foot Pedestal Color", type:"select",
     options: () => CONFIG.BR_footPedestalColors,
     // C52
-    validate: s => raw(s.B52) === "" ? null
-      : INLIST(CONFIG.BR_footPedestalColors, s.B52) ? null
+    validate: s => raw(s.B53) === "" ? null
+      : INLIST(CONFIG.BR_footPedestalColors, s.B53) ? null
       : "Not a valid foot pedestal colour." },
-  { cell:"B53", section:"ACCESSORIES", label:"Silicone Color", type:"select",
+  { cell:"B54", section:"ACCESSORIES", label:"Silicone Color", type:"select",
     options: siliconeColorOptions,
     hint:"Auto-set from the Back Wall Color (Config BD→BF table); can be overridden.",
     // C53 actually validates B10, so the message is phrased around the wall colour.
     validate: s => raw(s.B10) === "" ? null
       : CONFIG.siliconeTable.some(r => EQ(r.code, TRIM(s.B10))) ? null
       : "Back Wall Color \"" + TRIM(s.B10) + "\" has no silicone colour mapping." },
-  /* B54 (2026-08.3 sheet revision): the live sheet now computes this itself —
-   * "Yes" when the Door/Curtain Rod choice (B36) contains "Door", "No" when
+  /* B55 (2026-08.3 sheet revision): the live sheet now computes this itself —
+   * "Yes" when the Door/Curtain Rod choice (B37) contains "Door", "No" when
    * it contains "Rod" — for BOTH Tub and Shower, applied here exactly as
    * written per an explicit 2026-08 confirmation. It's no longer a manual
    * dropdown; see siliconeClearYes() and G41 (Silicone 2 clear) below. */
-  /* B55/B56 (added 2026-08, moved from B52/B53 in an earlier revision): Signature-
+  /* B56/B57 (added 2026-08, moved from B53/B54 in an earlier revision): Signature-
    * only Tigris Soap Dish + colour — see G30 in SECTION G for the model number
-   * this feeds. Distinct from the Foot Pedestal picker now on B52 above (which,
+   * this feeds. Distinct from the Foot Pedestal picker now on B53 above (which,
    * despite the "Soap Dish" name collision in an older revision, is unrelated). */
-  { cell:"B55", section:"ACCESSORIES", label:"Soap Dish", type:"select",
+  { cell:"B56", section:"ACCESSORIES", label:"Soap Dish", type:"select",
     options: s => EQ(s.B7,"Signature") ? ["Tigris Soap Dish","N/A"] : ["N/A"],
     // C55
-    validate: s => raw(s.B55) === "" ? null
-      : ((EQ(s.B7,"Signature") && INLIST(["Tigris Soap Dish","N/A"], s.B55)) ||
-         (!EQ(s.B7,"Signature") && EQ(s.B55,"N/A"))) ? null
-      : "Soap dish is only available on Signature wall systems. Choose N/A." },
-  { cell:"B56", section:"ACCESSORIES", label:"Soap Dish Color", type:"select",
-    options: s => EQ(s.B55,"Tigris Soap Dish") ? CONFIG.Z_sigWallColors : ["N/A"],
-    // C56
     validate: s => raw(s.B56) === "" ? null
-      : ((EQ(s.B55,"Tigris Soap Dish") && INLIST(CONFIG.Z_sigWallColors, s.B56)) ||
-         (!EQ(s.B55,"Tigris Soap Dish") && EQ(s.B56,"N/A"))) ? null
+      : ((EQ(s.B7,"Signature") && INLIST(["Tigris Soap Dish","N/A"], s.B56)) ||
+         (!EQ(s.B7,"Signature") && EQ(s.B56,"N/A"))) ? null
+      : "Soap dish is only available on Signature wall systems. Choose N/A." },
+  { cell:"B57", section:"ACCESSORIES", label:"Soap Dish Color", type:"select",
+    options: s => EQ(s.B56,"Tigris Soap Dish") ? CONFIG.Z_sigWallColors : ["N/A"],
+    // C56
+    validate: s => raw(s.B57) === "" ? null
+      : ((EQ(s.B56,"Tigris Soap Dish") && INLIST(CONFIG.Z_sigWallColors, s.B57)) ||
+         (!EQ(s.B56,"Tigris Soap Dish") && EQ(s.B57,"N/A"))) ? null
       : "Pick a Signature color code, or N/A if no soap dish is selected." }
 ];
 
@@ -2279,7 +2312,7 @@ function logExportToHistory(snap, exportType){
       totalCost: snap.haveCost ? snap.cost : null,
       rows: snap.rows.map(r => ({
         model: r.model, qty: r.qty,
-        description: r.item ? r.item.d : (r.constructed ? "(constructed)" : ""),
+        description: r.item ? r.item.d : (r.note || (r.constructed ? "(constructed)" : "")),
         unitCost: (r.item && typeof r.item.c === "number") ? r.item.c : null
       }))
     };
@@ -2314,9 +2347,16 @@ function wallBackModels(s, h){
 }
 
 const LINE_ITEMS = [
-  /* --- G6 : Base (tub or shower pan) ---------------------------------- */
-  { row:6, label:"Base", qty:() => 1,
+  /* --- G6 : Base (tub or shower pan) ----------------------------------
+     2026-09-28: a Custom Acrylic Shower Pan has no catalog SKU — the live
+     sheet puts the literal text "MUST ADD CUSTOM PAN TO ORDER!" in G6 (so it
+     reaches the output list as a reminder) and blanks the quantity (I6). */
+  { row:6, label:"Base", qty:s => TRIM(s.B25) === "Custom Acrylic Shower Pan" ? null : 1,
     models(s, h){
+      if (TRIM(s.B25) === "Custom Acrylic Shower Pan")
+        return { models:[CUSTOM_PAN_MSG], items:[], noMatch:false, constructed:true,
+                 note:"Custom pan — order it separately (not a catalog item)",
+                 alert:"Custom Acrylic Shower Pan selected — MUST ADD CUSTOM PAN TO ORDER!" };
       if (h.R2 === "" || raw(s.B26) === "" || raw(s.B28) === "" || raw(s.B30) === "") return BLANK;
       return FILTER_CATALOG(it =>
         SEARCH(h.R2, it.g) && SEARCH(h.R3, it.g) && SEARCH(h.R6, it.g) &&
@@ -2351,19 +2391,11 @@ const LINE_ITEMS = [
     } },
 
   /* --- G9 : Wall Back --------------------------------------------------
-     Quantity (confirmed 2026-08): back walls only tile in 36"-wide sections
-     on Lifestyle surrounds, so Lifestyle qty = ceil(length / 36). Signature
-     back walls are a single one-piece panel (qty 1) EXCEPT the SC (Savannah
-     Cove) color between 60" and 64" wide, which has no matching single panel
-     size in that range and needs two 60x97 panels instead (qty 2) — see the
-     matching R13 token logic in computeHelpers() above, which must stay in
-     sync with this quantity. */
+     Quantity: see wallBackQty(). Lifestyle keeps the app's ceil(length / 36)
+     rule (confirmed 2026-08; the 2026-09-28 sheet's I9 hard-codes 2 for
+     Lifestyle — kept the length-based rule deliberately). */
   { row:9, label:"Wall Back",
-    qty(s, h){
-      if (EQ(s.B7, "Lifestyle")) return Math.max(1, Math.ceil(h.backWallLen / 36));
-      if (h.R12 === "SC" && h.backWallLen > 59 && h.backWallLen <= 64) return 2;
-      return 1;
-    },
+    qty(s, h){ return wallBackQty(s, h); },
     models(s, h){ return wallBackModels(s, h); } },
 
   /* --- G10 : Side Wall -------------------------------------------------- */
@@ -2395,58 +2427,60 @@ const LINE_ITEMS = [
     } },
 
   /* --- G13 : Shower Head (Std) ------------------------------------------ */
-  { row:13, label:"Shower Head (Std)", qty:() => 1,
+  { row:13, label:"Shower Head", qty:() => 1,
     models(s){
       if (TRIM(s.B33) === "" || TRIM(s.B34) === "") return BLANK;
-      return FILTER_CATALOG(it => SEARCH("Shower Heads Only; " + TRIM(s.B33) + " Shower Heads", it.g) &&
+      // 2026-09-28: B35 = "Rain Shower Head" switches to the "<design> Rain Shower Heads" group.
+      const kind = EQ(TRIM(s.B35), "Rain Shower Head") ? " Rain Shower Heads" : " Shower Heads";
+      return FILTER_CATALOG(it => SEARCH("Shower Heads Only; " + TRIM(s.B33) + kind, it.g) &&
                                   SEARCH("-" + TRIM(s.B34), it.m) && notYC(it));
     } },
 
   /* --- G14 : Shower Spa -------------------------------------------------- */
   { row:14, label:"Shower Spa", qty:() => 1,
     models(s){
-      if (TRIM(s.B35) === "Wand and Diverter"){
+      if (TRIM(s.B36) === "Wand and Diverter"){
         if (TRIM(s.B34) === "") return BLANK;
         return FILTER_CATALOG(it => EQ(TRIM(it.m), "FX-HNDSHLF-" + TRIM(s.B34)));
       }
-      if (TRIM(s.B35) === "" || TRIM(s.B34) === "") return BLANK;
-      const grp = "Shower Spas; " + TRIM(s.B35).split("-").join(" ") + " Shower Spa";
+      if (TRIM(s.B36) === "" || TRIM(s.B34) === "") return BLANK;
+      const grp = "Shower Spas; " + TRIM(s.B36).split("-").join(" ") + " Shower Spa";
       return FILTER_CATALOG(it => SEARCH(grp, it.g) && SEARCH("-" + TRIM(s.B34), it.m));
     } },
 
   /* --- G15 : Seat -------------------------------------------------------- */
   { row:15, label:"Seat", qty:() => 1,
     models(s){
-      const seat = TRIM(s.B38);
+      const seat = TRIM(s.B39);
       if (seat === "") return BLANK;
       if (seat === "Folding White")
         return FILTER_CATALOG(it => SEARCH("White Fold Down Shower Seat", it.g) && raw(it.m) !== "");
       if (seat === "Bench wrap and top"){
-        if (TRIM(s.B39) === "" || TRIM(s.B40) === "") return BLANK;
+        if (TRIM(s.B40) === "" || TRIM(s.B41) === "") return BLANK;
         // NOTE: the Excel searches for "FX-BNCH…", a prefix that does not exist in the
         // catalog (real SKUs are FX-BNWRP-* / FX-BNTOP-*).  Reproduced verbatim — see
         // spec_notes.md "Approximations" #8.
-        return FILTER_CATALOG(it => SEARCH("FX-BNCH" + TRIM(s.B40) + "-" + TRIM(s.B39), it.m));
+        return FILTER_CATALOG(it => SEARCH("FX-BNCH" + TRIM(s.B41) + "-" + TRIM(s.B40), it.m));
       }
-      if (TRIM(s.B39) === "") return BLANK;
+      if (TRIM(s.B40) === "") return BLANK;
       const grp = seat === "Hanging Teak" ? "Hanging Teak Seat"
                 : seat === "Folding Teak" ? "Teak Folding Seats"
                 : (seat === "Prairie Corner Bench" || seat === "Prairie Corner Seat") ? "Prairie Corner Seats"
                 : "###";
-      return FILTER_CATALOG(it => SEARCH(grp, it.g) && SEARCH("-" + TRIM(s.B39), it.m));
+      return FILTER_CATALOG(it => SEARCH(grp, it.g) && SEARCH("-" + TRIM(s.B40), it.m));
     } },
 
   /* --- G16 / G17 : Grab Bars --------------------------------------------- */
-  { row:16, label:"Grab Bar 1", qty:() => 2,
-    models: (s) => grabBarModels(s, s.B41, s.B42, s.B34) },
+  { row:16, label:"Grab Bar 1", qty:() => 1,   // I16: 2 -> 1 (2026-09-28)
+    models: (s) => grabBarModels(s, s.B42, s.B43, s.B34) },
   { row:17, label:"Grab bar 2", qty:() => 1,
-    models: (s) => grabBarModels(s, s.B43, s.B44, s.B34) },
+    models: (s) => grabBarModels(s, s.B44, s.B45, s.B34) },
 
   /* --- row 18 : Grab Shelf (dead stub, distinct from the real row 32 below) -
      The Excel has a label and a quantity in F18/I18 but NO formula in G18, so
      this line never produces a model number. Looks like leftover cruft from
      an earlier, abandoned attempt at the same "Grab Shelf" feature that later
-     landed properly at row 32 (F32/G32/B48-B50) in the 2026-08 sheet revision
+     landed properly at row 32 (F32/G32/B49-B51) in the 2026-08 sheet revision
      — reproduced as-is since it's genuinely inert either way. */
   { row:18, label:"Grab Shelf (unused)", qty:() => 1, missingFormula:true, models:() => BLANK },
 
@@ -2459,17 +2493,22 @@ const LINE_ITEMS = [
 
   /* --- G20 : Window Kit ---------------------------------------------------
      Not a catalog lookup — Excel builds the string "FX-WIN-" & B22 directly. */
-  { row:20, label:"Window Kit", qty:() => 1,
+  { row:20, label:"Window Kit", qty:(s, h, res) => res.models.length ? 1 : null,
+    // 2026-09-28: now a real catalog lookup (the sheet added FX-WIN-* SKUs
+    // under "Signature Window Kits") and only fires when Window Kit = Yes.
+    // Lifestyle colours have no window kit SKU, so they surface as No match,
+    // exactly like the live sheet.
     models(s){
-      if (TRIM(s.B22) === "" || TRIM(s.B22) === "N/A") return BLANK;
-      return { models:["FX-WIN-" + TRIM(s.B22)], items:[], noMatch:false, constructed:true };
+      if (!EQ(TRIM(s.B21), "Yes") || TRIM(s.B22) === "" || TRIM(s.B22) === "N/A") return BLANK;
+      return FILTER_CATALOG(it => SEARCH("Signature Window Kits", it.g) &&
+                                  EQ(TRIM(it.m), "FX-WIN-" + TRIM(s.B22)));
     } },
 
   /* --- G21 : Inside Corner Trim ---------------------------------------------
      Rewritten for the 2026-08 sheet revision: Signature no longer auto-gets
      CR-96-ONE (that branch was removed live-side, applied here as confirmed),
      and the Lifestyle branch now reads B15 instead of B18. */
-  { row:21, label:"Inside Corner Trim", qty:() => 2,
+  { row:21, label:"Inside Corner Trim", qty:s => EQ(s.B7,"Lifestyle") ? 2 : null,
     models(s){
       if (!EQ(s.B7,"Lifestyle")) return BLANK;
       if (raw(s.B15) === "" || EQ(s.B15,"N/A")) return BLANK;
@@ -2503,8 +2542,8 @@ const LINE_ITEMS = [
   /* --- G24 : Caddy --------------------------------------------------------- */
   { row:24, label:"Caddy", qty:(s, h, res) => res.models.length ? 1 : null,
     models(s){
-      if (TRIM(s.B51) === "" || TRIM(s.B51) === "N/A" || TRIM(s.B10) === "") return BLANK;
-      const prefix = LOOKUP(CONFIG.caddyPrefix, "option", TRIM(s.B51), "prefix");
+      if (TRIM(s.B52) === "" || TRIM(s.B52) === "N/A" || TRIM(s.B10) === "") return BLANK;
+      const prefix = LOOKUP(CONFIG.caddyPrefix, "option", TRIM(s.B52), "prefix");
       if (prefix === "") return BLANK;
       return FILTER_CATALOG(it => EQ(TRIM(it.m), prefix + TRIM(s.B10)));
     } },
@@ -2512,8 +2551,8 @@ const LINE_ITEMS = [
   /* --- G25 : Door ---------------------------------------------------------- */
   { row:25, label:"Door", qty:() => 1,
     models(s){
-      if (TRIM(s.B36) === "" || TRIM(s.B37) === "") return BLANK;
-      return FILTER_CATALOG(it => EQ(TRIM(it.d), TRIM(s.B37) + " " + TRIM(s.B36)));
+      if (TRIM(s.B37) === "" || TRIM(s.B38) === "") return BLANK;
+      return FILTER_CATALOG(it => EQ(TRIM(it.d), TRIM(s.B38) + " " + TRIM(s.B37)));
     } },
 
   /* --- row 26 : Rod — no formula in the Excel ------------------------------ */
@@ -2524,22 +2563,22 @@ const LINE_ITEMS = [
     missingFormula:true, models:() => BLANK },
 
   /* --- G28 : Diverter valve (no quantity in the Excel) --------------------- */
-  { row:28, label:"Diverter valve", qty:() => null, noQtyInExcel:true,
+  { row:28, label:"Diverter valve", qty:() => 1,   // I28 = 1 (2026-09-28)
     models(s){
-      if (TRIM(s.B35) !== "Wand and Diverter") return BLANK;
+      if (TRIM(s.B36) !== "Wand and Diverter") return BLANK;
       return FILTER_CATALOG(it => EQ(TRIM(it.m), "FX-DIVERTVALVE3E"));
     } },
 
   /* --- G29 : Diverter Trim (no quantity in the Excel) ---------------------- */
-  { row:29, label:"Diverter Trim", qty:() => null, noQtyInExcel:true,
+  { row:29, label:"Diverter Trim", qty:() => 1,    // I29 = 1 (2026-09-28)
     models(s){
-      if (TRIM(s.B35) !== "Wand and Diverter" || TRIM(s.B33) === "" || TRIM(s.B34) === "") return BLANK;
+      if (TRIM(s.B36) !== "Wand and Diverter" || TRIM(s.B33) === "" || TRIM(s.B34) === "") return BLANK;
       return FILTER_CATALOG(it => SEARCH("Diverter Trims; " + TRIM(s.B33), it.g) &&
                                   SEARCH("DIVERT3", it.m) &&
                                   SEARCH("-" + TRIM(s.B34), it.m));
     } },
 
-  /* --- G30 : Soap Dish (added 2026-08, moved to B55/B56 in the 2026-08.2
+  /* --- G30 : Soap Dish (added 2026-08, moved to B56/B57 in the 2026-08.2
      sheet revision) ------------------------------------------------------
      Signature-only Tigris Soap Dish. Model prefix comes from the Config
      BJ/BK lookup table (only "Tigris Soap Dish" has a prefix today —
@@ -2547,10 +2586,10 @@ const LINE_ITEMS = [
      dish styles can be added later the same way grab bars / shelves work. */
   { row:30, label:"Soap Dish", qty:(s, h, res) => res.models.length ? 1 : null,
     models(s){
-      if (TRIM(s.B55) === "" || TRIM(s.B55) === "N/A" || TRIM(s.B56) === "" || TRIM(s.B56) === "N/A") return BLANK;
-      const prefix = LOOKUP(CONFIG.soapDishPrefix, "option", TRIM(s.B55), "prefix");
+      if (TRIM(s.B56) === "" || TRIM(s.B56) === "N/A" || TRIM(s.B57) === "" || TRIM(s.B57) === "N/A") return BLANK;
+      const prefix = LOOKUP(CONFIG.soapDishPrefix, "option", TRIM(s.B56), "prefix");
       if (prefix === "") return BLANK;
-      return FILTER_CATALOG(it => EQ(TRIM(it.m), prefix + TRIM(s.B56)));
+      return FILTER_CATALOG(it => EQ(TRIM(it.m), prefix + TRIM(s.B57)));
     } },
 
   /* --- G31 : Inside Corner Reinforcement (new 2026-08.4 sheet revision) ----
@@ -2564,7 +2603,7 @@ const LINE_ITEMS = [
      condition for display, but isn't actually read by this formula — see the
      B18 comment in FIELDS. The Excel has no quantity formula for this row
      (I31 is blank), like Diverter valve/Trim and T Trim. */
-  { row:31, label:"Inside Corner Reinforcement", qty:() => null, noQtyInExcel:true,
+  { row:31, label:"Inside Corner Reinforcement", qty:s => EQ(s.B7,"Signature") ? 2 : null,   // I31 (2026-09-28)
     models(s){
       if (!EQ(s.B7,"Signature")) return BLANK;
       return FILTER_CATALOG(it => SEARCH("CR-96-ONE", it.m));
@@ -2573,7 +2612,7 @@ const LINE_ITEMS = [
   /* --- G32 : Grab Shelf (new 2026-08.2 sheet revision) ----------------------
      A standalone Yes/No + Size + Color ordering path that resolves to the
      exact same PP588xx/PP578xx SKUs already reachable via the Shelves
-     (B46/B47 -> G19) "20in Grab Shelf" / "30in Grab Bar Shelf" options —
+     (B47/B48 -> G19) "20in Grab Shelf" / "30in Grab Bar Shelf" options —
      built as a separate line item anyway per an explicit 2026-08 confirmation.
      Prefix comes from Config!BP:BQ (grab shelf size), suffix reuses the same
      Config!BA:BB metal-colour table the Shelves line item already uses. The
@@ -2581,25 +2620,25 @@ const LINE_ITEMS = [
      1, matching every other single-unit optional accessory. */
   { row:32, label:"Grab Shelf", qty:(s, h, res) => res.models.length ? 1 : null,
     models(s){
-      if (TRIM(s.B48) !== "Yes" || TRIM(s.B49) === "" || TRIM(s.B49) === "N/A" ||
-          TRIM(s.B50) === "" || TRIM(s.B50) === "N/A") return BLANK;
-      const prefix = LOOKUP(CONFIG.grabShelfSizePrefix, "option", TRIM(s.B49), "prefix");
-      const suffix = LOOKUP(CONFIG.metalSuffix, "color", TRIM(s.B50), "suffix");
+      if (TRIM(s.B49) !== "Yes" || TRIM(s.B50) === "" || TRIM(s.B50) === "N/A" ||
+          TRIM(s.B51) === "" || TRIM(s.B51) === "N/A") return BLANK;
+      const prefix = LOOKUP(CONFIG.grabShelfSizePrefix, "option", TRIM(s.B50), "prefix");
+      const suffix = LOOKUP(CONFIG.metalSuffix, "color", TRIM(s.B51), "suffix");
       if (prefix === "" || suffix === "") return BLANK;
       return FILTER_CATALOG(it => EQ(TRIM(it.m), prefix + suffix));
     } },
 
   /* --- G39 : CWS (silicone sausage pack) ----------------------------------- */
-  { row:39, label:"CWS", qty:() => 14,
+  { row:40, label:"CWS", qty:() => 14,
     models(s){
       if (TRIM(s.B6) === "") return BLANK;
       return FILTER_CATALOG(it => SEARCH("SP-SLN-CWS", it.m));
     } },
 
   /* --- G40 : Silicone ------------------------------------------------------ */
-  { row:40, label:"Silicone", qty:() => 3,
+  { row:41, label:"Silicone", qty:() => 3,
     models(s){
-      const v = raw(s.B53);
+      const v = raw(s.B54);
       if (TRIM(v) === "" || TRIM(v).charAt(0) === "✗") return BLANK;
       const open = v.indexOf("("), close = v.indexOf(")");
       if (open === -1 || close === -1) return BLANK;                 // Excel: FIND → #VALUE!
@@ -2608,25 +2647,25 @@ const LINE_ITEMS = [
     } },
 
   /* --- G41 : Silicone 2 (clear) --------------------------------------------
-     2026-08.3 sheet revision: B54 is no longer a manual dropdown — it's
-     derived from the Door/Curtain Rod choice (B36) via siliconeClearYes(),
+     2026-08.3 sheet revision: B55 is no longer a manual dropdown — it's
+     derived from the Door/Curtain Rod choice (B37) via siliconeClearYes(),
      applied for both Tub and Shower exactly as the live formula reads. */
-  { row:41, label:"Silicone 2 (clear)", qty:() => 1,
+  { row:42, label:"Silicone 2 (clear)", qty:() => 1,
     models(s){
       if (siliconeClearYes(s) !== "Yes") return BLANK;
       return FILTER_CATALOG(it => EQ(TRIM(it.m), "SP-SLN-CLR"));
     } },
 
   /* --- G33 : Foot Pedestal (new 2026-08.3 sheet revision) -------------------
-     A colour picker (B52, including N/A) exactly like Perimeter Edge Trim's
+     A colour picker (B53, including N/A) exactly like Perimeter Edge Trim's
      B16 — no separate Yes/No toggle in the live sheet. Exact-match lookup
      against "FX-CFP-<color>"; qty defaults to 1 like every other single-unit
      optional accessory (I33 in the Excel is a blank->1 formula, same shape
      as Caddy/Soap Dish/Grab Shelf). */
   { row:33, label:"Foot Pedestal", qty:(s, h, res) => res.models.length ? 1 : null,
     models(s){
-      if (TRIM(s.B52) === "" || TRIM(s.B52) === "N/A") return BLANK;
-      return FILTER_CATALOG(it => EQ(TRIM(it.m), "FX-CFP-" + TRIM(s.B52)));
+      if (TRIM(s.B53) === "" || TRIM(s.B53) === "N/A") return BLANK;
+      return FILTER_CATALOG(it => EQ(TRIM(it.m), "FX-CFP-" + TRIM(s.B53)));
     } },
 
   /* --- G34 : Ceiling Panel (new 2026-08.4 sheet revision) -------------------
@@ -2641,8 +2680,32 @@ const LINE_ITEMS = [
       if (EQ(s.B7,"Lifestyle")) return wallBackModels(s, h);
       if (TRIM(s.B20) === "" || TRIM(s.B20) === "N/A") return BLANK;
       return FILTER_CATALOG(it => SEARCH("Ceiling Panels", it.g) && SEARCH("-" + TRIM(s.B20), it.m));
+    } },
+
+  /* --- G35 : Seam Trim (new 2026-09-28 sheet revision) ----------------------
+     Signature back walls wider than 64" are now two 65x97 panels, joined by
+     one WA-FAT-<Back Wall Color> accent/seam trim. Live formula:
+     IF(OR(B7<>"Signature", N(B12)<=64, B10=""), "", exact "WA-FAT-"&B10).
+     Tied to wallBackQty() === 2 rather than the literal ">64" so the kept SC
+     60x97 exception (two panels from 60") also gets its seam trim. */
+  { row:35, label:"Seam Trim", qty:(s, h, res) => res.models.length ? 1 : null,
+    models(s, h){
+      if (!EQ(TRIM(s.B7), "Signature") || TRIM(s.B10) === "" || wallBackQty(s, h) < 2) return BLANK;
+      return FILTER_CATALOG(it => EQ(TRIM(it.m), "WA-FAT-" + TRIM(s.B10)));
     } }
 ];
+
+/** I9 — Wall Back quantity.
+ *  Signature (2026-09-28 sheet): 1 panel up to 64", 2 panels (+ Seam Trim)
+ *  over 64". SC exception (kept 2026-09-28): SC only has a 60"-wide flat
+ *  wall, so it's 1 panel up to 59" and 2 panels above that.
+ *  Lifestyle: ceil(length / 36) — the app's 2026-08 rule, kept over the
+ *  sheet's hard-coded 2. */
+function wallBackQty(s, h){
+  if (EQ(s.B7, "Lifestyle")) return Math.max(1, Math.ceil(h.backWallLen / 36));
+  if (h.R12 === "SC") return h.backWallLen > 59 ? 2 : 1;
+  return h.backWallLen > 64 ? 2 : 1;
+}
 
 /** G16 / G17 share one rule: SG-<length without ">|X or G|-<valve colour>. */
 function grabBarModels(s, styleCell, lengthCell, colorCell){
@@ -2685,6 +2748,7 @@ function computeOutput(state){
     const model = res.models.length ? res.models[0] : "";
 
     if (res.error) issues.push({ level:"err", text:li.label + ": " + res.error });
+    if (res.alert) issues.push({ level:"err", text:li.label + ": " + res.alert });
     if (res.models.length > 1)
       issues.push({ level:"warn", text:li.label + ": " + res.models.length +
         " catalog items match (" + res.models.join(", ") +
@@ -2694,7 +2758,7 @@ function computeOutput(state){
 
     lines.push({
       row: li.row, label: li.label, model: model, qty: qty,
-      noMatch: res.noMatch, constructed: !!res.constructed,
+      noMatch: res.noMatch, constructed: !!res.constructed, note: res.note || "",
       item: res.items && res.items.length ? res.items[0] : null,
       noQtyInExcel: !!li.noQtyInExcel, missingFormula: !!li.missingFormula
     });
@@ -2707,7 +2771,7 @@ function computeOutput(state){
     let e = bySku.get(l.model);
     if (!e){
       e = { model:l.model, item:l.item, qty:null, sources:[], noMatch:l.noMatch,
-            constructed:l.constructed, noQtyInExcel:false };
+            constructed:l.constructed, note:l.note, noQtyInExcel:false };
       bySku.set(l.model, e);
     }
     if (l.qty !== null && l.qty !== undefined) e.qty = (e.qty || 0) + l.qty;
@@ -2891,7 +2955,7 @@ function onFieldChange(f, value){
   // (the Excel has no formula there — see spec_notes.md "Approximations" #1).
   if (f.cell === "B10"){
     const auto = siliconeForWallColor(state);
-    if (auto) state.B53 = auto;
+    if (auto) state.B54 = auto;
   }
   refresh();
 }
@@ -2947,10 +3011,10 @@ function notApplicableMessage(f, s){
     case "B26": return "Choose a stock tub or shower pan type first.";
     case "B29": return "Only applies to a Stock Acrylic Bathtub.";
     case "B30": return "Choose a tub / pan dimension first.";
-    case "B40": return "Only applies when the seat is “Bench wrap and top”.";
-    case "B39": return "Choose a seat style first.";
-    case "B42": return "Choose Grab Bar 1 Style first.";
-    case "B44": return "Choose Grab Bar 2 Style first.";
+    case "B41": return "Only applies when the seat is “Bench wrap and top”.";
+    case "B40": return "Choose a seat style first.";
+    case "B43": return "Choose Grab Bar 1 Style first.";
+    case "B45": return "Choose Grab Bar 2 Style first.";
     default:    return "Not applicable for this configuration.";
   }
 }
@@ -3019,13 +3083,13 @@ function renderResults(out){
 
     const tb = el("tbody");
     for (const r of out.rows){
-      const tr = el("tr", (r.noMatch ? "nomatch" : "") + (r.overridden ? " qty-overridden" : ""));
+      const tr = el("tr", ((r.noMatch || r.note) ? "nomatch" : "") + (r.overridden ? " qty-overridden" : ""));
       tr.appendChild(el("td", "model", r.model));
 
       const dcell = el("td");
       dcell.appendChild(document.createTextNode(
         r.noMatch ? "Check the selections for this line item"
-                  : (r.item ? r.item.d : (r.constructed ? "(built from the selections — not a catalog lookup)" : ""))));
+                  : (r.item ? r.item.d : (r.note ? r.note : (r.constructed ? "(built from the selections — not a catalog lookup)" : "")))));
       const src = el("div", "src", r.sources.join(", ") + (r.noQtyInExcel ? " · no quantity set in the Excel" : ""));
       dcell.appendChild(src);
       tr.appendChild(dcell);
@@ -3549,8 +3613,8 @@ function buildCutSheetPdfBook(snap){
       const unit = (r.item && typeof r.item.c === "number") ? r.item.c : null;
       const ext  = (unit !== null && r.qty) ? unit * r.qty : null;
       rows.push([
-        {text:r.model, bold:true, color: r.noMatch ? "B3261E" : null},
-        {text: r.noMatch ? "Check the selections for this line item" : (r.item ? r.item.d : ""), italic: r.noMatch},
+        {text:r.model, bold:true, color: (r.noMatch || r.note) ? "B3261E" : null},
+        {text: r.noMatch ? "Check the selections for this line item" : (r.item ? r.item.d : (r.note || "")), italic: r.noMatch || !!r.note},
         {text: r.qty === null ? "—" : String(r.qty), align:"right"},
         {text: unit === null ? "" : money2(unit), align:"right"},
         {text: ext  === null ? "" : money2(ext),  align:"right"},
