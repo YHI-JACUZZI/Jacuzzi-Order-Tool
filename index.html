@@ -159,6 +159,22 @@ tr.qty-overridden .qty-input{border-color:var(--warn); background:#fffaf0}
 .issues li.warn{background:var(--warn-soft); color:var(--warn)}
 .summary-bar{display:flex; gap:18px; padding:10px 16px; border-bottom:1px solid var(--line); background:#fbfcfd; font-size:12.5px; color:var(--ink-soft)}
 .summary-bar b{color:var(--ink); font-size:15px; display:block; font-weight:650}
+/* ============================== CONTRACT IMPORT ======================== */
+.overlay{position:fixed; inset:0; background:rgba(16,24,40,.45); z-index:50; display:flex; align-items:flex-start; justify-content:center; padding:40px 16px; overflow:auto}
+.overlay[hidden]{display:none}
+.dialog{background:var(--panel); border-radius:var(--radius); box-shadow:0 10px 40px rgba(16,24,40,.3); width:min(960px,100%)}
+.dialog > h2{font-size:16px; padding:14px 18px; border-bottom:1px solid var(--line)}
+.dialog-body{padding:14px 18px}
+.dialog-foot{display:flex; gap:8px; justify-content:flex-end; padding:12px 18px; border-top:1px solid var(--line)}
+.contract-privacy{font-size:12.5px; color:var(--ink-soft); margin:0 0 12px}
+.contract-pick label{display:block; font-weight:550; margin:10px 0 4px}
+.contract-pick textarea{width:100%; min-height:130px; font:inherit; font-size:13px; padding:8px; border:1px solid var(--line-strong); border-radius:6px}
+.contract-intro{margin:6px 0 10px}
+.contract-table td.src{max-width:340px}
+.contract-table tr.conf-low td,.contract-table tr.conf-check td{background:var(--warn-soft)}
+.contract-opt{display:block; margin:12px 0 6px; font-weight:500}
+.contract-text pre{white-space:pre-wrap; max-height:260px; overflow:auto; background:#f7f9fb; border:1px solid var(--line); border-radius:6px; padding:8px; font-size:12px}
+.contract-text summary{cursor:pointer; color:var(--accent); margin-top:8px}
 </style>
 </head>
 <body>
@@ -169,6 +185,7 @@ tr.qty-overridden .qty-input{border-color:var(--warn); background:#fffaf0}
       <small>Excel replica &middot; Selection Sheet &rarr; Model Numbers Output</small></div>
     <div class="header-actions">
       <a href="history.html" id="link-history" target="_blank" rel="noopener" class="btn-link">View order history</a>
+      <button type="button" id="btn-contract">Import from contract</button>
       <button type="button" id="btn-export-pdf" class="primary">Export Cut Sheet (PDF)</button>
       <button type="button" id="btn-export-csv" class="primary">Export Model List (CSV)</button>
       <button type="button" id="btn-reset-qty">Reset quantities</button>
@@ -202,6 +219,30 @@ tr.qty-overridden .qty-input{border-color:var(--warn); background:#fffaf0}
         <div id="issues-box" style="padding:12px 16px 0"></div>
         <div id="results-box"></div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Contract import dialog (SECTION L) -->
+<div class="overlay" id="contract-overlay" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="contract-title">
+    <h2 id="contract-title">Import selections from a contract</h2>
+    <div class="dialog-body">
+      <p class="contract-privacy">The contract is read inside this browser only. It is not uploaded or saved anywhere, and card or bank details are removed before anything is read.</p>
+      <div id="contract-step-pick" class="contract-pick">
+        <label for="contract-file">Contract file (PDF, Word .docx or .txt)</label>
+        <input type="file" id="contract-file" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain">
+        <label for="contract-paste">…or paste the contract text</label>
+        <textarea id="contract-paste" placeholder="Paste the contract's product / selections section here"></textarea>
+      </div>
+      <div id="contract-step-review" hidden></div>
+      <div id="contract-status" class="note" style="display:none"></div>
+    </div>
+    <div class="dialog-foot">
+      <button type="button" id="contract-back" hidden>Back</button>
+      <button type="button" id="contract-cancel">Cancel</button>
+      <button type="button" id="contract-read" class="primary">Read contract</button>
+      <button type="button" id="contract-apply" class="primary" hidden>Apply selected</button>
     </div>
   </div>
 </div>
@@ -3692,12 +3733,1067 @@ function resetForm(){
   refresh();
 }
 
+/* ==========================================================================
+   SECTION L — CONTRACT IMPORT
+   "Import from contract": reads a contract (PDF, Word .docx, .txt, or pasted
+   text) and PROPOSES Selection Sheet values. Nothing is applied until the
+   user reviews the proposals and clicks Apply.
+
+   Privacy: everything happens inside this browser tab. The file is never
+   uploaded, logged or stored anywhere. Payment-card data (Luhn-valid card
+   numbers, CVV/CVC, expiry dates, bank account/routing numbers) is scrubbed
+   from the extracted text BEFORE the matcher or the preview ever sees it.
+
+   Zero dependencies: PDF content streams and .docx files are both plain
+   deflate, and every current browser ships DecompressionStream, so no PDF
+   or zip library is needed. Scanned (image-only) PDFs have no text layer;
+   for those the user is asked to paste the text instead (no OCR).
+
+   Tuning: CONTRACT_LABELS / CONTRACT_ALIASES are the only things that
+   should need editing to fit a specific contract template.
+   ========================================================================== */
+
+/* ---------------------------------------------------- byte helpers --- */
+function bytesToLatin1(u8){
+  let s = "";
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return s;
+}
+function latin1ToBytes(s){
+  const u = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i) & 0xff;
+  return u;
+}
+/** Inflate, keeping whatever decoded before an error (PDF streams often carry
+ *  trailing junk after the deflate end marker, which DecompressionStream rejects). */
+async function inflateBytes(u8, format){
+  const chunks = []; let total = 0;
+  try {
+    const reader = new Blob([u8]).stream().pipeThrough(new DecompressionStream(format)).getReader();
+    for (;;){
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value); total += value.length;
+    }
+  } catch (e) { /* keep partial output */ }
+  const out = new Uint8Array(total); let o = 0;
+  for (const c of chunks){ out.set(c, o); o += c.length; }
+  return out;
+}
+
+/* ------------------------------------------------- PDF object parser --- */
+const PDF_WS = /[\0\t\n\f\r ]/;
+const PDF_DELIM = /[\0\t\n\f\r ()<>\[\]{}\/%]/;
+function pdfSkipWs(s, i){
+  for (;;){
+    while (i < s.length && PDF_WS.test(s[i])) i++;
+    if (s[i] === "%"){ while (i < s.length && s[i] !== "\n" && s[i] !== "\r") i++; continue; }
+    return i;
+  }
+}
+/** Parses one PDF object at s[i]. Returns [value, nextIndex].
+ *  dict → plain object, array → Array, name → {n}, string → {str: "latin1 bytes"},
+ *  ref → {ref: num}, operator/keyword → {op}. */
+function pdfParse(s, i){
+  i = pdfSkipWs(s, i);
+  const c = s[i];
+  if (c === "<" && s[i+1] === "<"){
+    const d = {}; i += 2;
+    for (;;){
+      i = pdfSkipWs(s, i);
+      if (i >= s.length) return [d, i];
+      if (s[i] === ">" && s[i+1] === ">") return [d, i + 2];
+      const [k, j] = pdfParse(s, i);
+      if (!k || k.n === undefined){ i = j > i ? j : i + 1; continue; }
+      const [v, j2] = pdfParse(s, j);
+      d[k.n] = v; i = j2;
+    }
+  }
+  if (c === "<"){
+    const e = s.indexOf(">", i);
+    const hex = s.slice(i + 1, e < 0 ? s.length : e).replace(/[^0-9a-fA-F]/g, "");
+    let str = "";
+    for (let k = 0; k < hex.length; k += 2) str += String.fromCharCode(parseInt((hex[k] + (hex[k+1] || "0")), 16));
+    return [{ str }, e < 0 ? s.length : e + 1];
+  }
+  if (c === "("){
+    let depth = 1, str = ""; i++;
+    while (i < s.length && depth){
+      const ch = s[i++];
+      if (ch === "\\"){
+        const n = s[i++];
+        const map = { n:"\n", r:"\r", t:"\t", b:"\b", f:"\f", "(":"(", ")":")", "\\":"\\" };
+        if (n in map) str += map[n];
+        else if (n >= "0" && n <= "7"){
+          let oct = n;
+          while (oct.length < 3 && s[i] >= "0" && s[i] <= "7") oct += s[i++];
+          str += String.fromCharCode(parseInt(oct, 8) & 0xff);
+        } else if (n === "\r"){ if (s[i] === "\n") i++; }
+        else if (n !== "\n") str += n;
+      } else if (ch === "("){ depth++; str += ch; }
+      else if (ch === ")"){ depth--; if (depth) str += ch; }
+      else str += ch;
+    }
+    return [{ str }, i];
+  }
+  if (c === "["){
+    const a = []; i++;
+    for (;;){
+      i = pdfSkipWs(s, i);
+      if (i >= s.length || s[i] === "]") return [a, i + 1];
+      const [v, j] = pdfParse(s, i);
+      a.push(v); i = j > i ? j : i + 1;
+    }
+  }
+  if (c === "/"){
+    let j = i + 1;
+    while (j < s.length && !PDF_DELIM.test(s[j])) j++;
+    return [{ n: s.slice(i + 1, j).replace(/#([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16))) }, j];
+  }
+  let j = i;
+  while (j < s.length && !PDF_DELIM.test(s[j])) j++;
+  if (j === i) return [{ op: s[i] }, i + 1];      // stray delimiter
+  const tok = s.slice(i, j);
+  if (/^[+-]?(\d+\.?\d*|\.\d+)$/.test(tok)){
+    const m = /^\s+(\d+)\s+R(?=[\0\t\n\f\r ()<>\[\]{}\/%]|$)/.exec(s.slice(j, j + 24));
+    if (/^\d+$/.test(tok) && m) return [{ ref: +tok }, j + m[0].length];
+    return [parseFloat(tok), j];
+  }
+  if (tok === "true") return [true, j];
+  if (tok === "false") return [false, j];
+  if (tok === "null") return [null, j];
+  return [{ op: tok }, j];
+}
+
+function pdfAscii85(s){
+  s = s.replace(/^\s*<~/, "").replace(/~>[\s\S]*$/, "").replace(/\s+/g, "");
+  let out = "", grp = [];
+  const flush = n => {
+    while (grp.length < 5) grp.push(84);
+    let v = 0; for (const c of grp) v = v * 85 + c;
+    const b = [(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255];
+    out += String.fromCharCode.apply(null, b.slice(0, n));
+    grp = [];
+  };
+  for (const ch of s){
+    if (ch === "z" && grp.length === 0){ out += "\0\0\0\0"; continue; }
+    const c = ch.charCodeAt(0) - 33;
+    if (c < 0 || c > 84) continue;
+    grp.push(c);
+    if (grp.length === 5) flush(4);
+  }
+  if (grp.length) flush(grp.length - 1);
+  return out;
+}
+
+/** Indexes every "N G obj" in the file (plus objects packed inside /ObjStm
+ *  streams) and returns a small resolver over them. */
+async function pdfOpen(u8){
+  const s = bytesToLatin1(u8);
+  const objs = new Map();           // num → { val, raw (stream bytes, latin1) }
+  const re = /(\d+)\s+\d+\s+obj\b/g;
+  let m;
+  while ((m = re.exec(s))){
+    const num = +m[1];
+    const [val, after] = pdfParse(s, m.index + m[0].length);
+    let raw = null, next = after;
+    const k = pdfSkipWs(s, after);
+    if (s.startsWith("stream", k)){
+      let ds = k + 6;
+      if (s[ds] === "\r") ds++;
+      if (s[ds] === "\n") ds++;
+      let len = val && typeof val.Length === "number" ? val.Length : -1;
+      let de = len >= 0 && s.startsWith("endstream", pdfSkipWs(s, ds + len)) ? ds + len : s.indexOf("endstream", ds);
+      if (de < 0) de = s.length;
+      raw = s.slice(ds, de);
+      if (len < 0) raw = raw.replace(/\r?\n$/, "");
+      next = de + 9;
+    }
+    objs.set(num, { val, raw });
+    re.lastIndex = Math.max(next, re.lastIndex);
+  }
+  const cache = new Map();
+  const doc = {
+    objs,
+    get(v){ let n = 0; while (v && v.ref !== undefined && n++ < 32){ const o = objs.get(v.ref); v = o ? o.val : null; } return v; },
+    async stream(ref){
+      const num = ref && ref.ref !== undefined ? ref.ref : null;
+      if (num === null || !objs.has(num)) return "";
+      if (cache.has(num)) return cache.get(num);
+      const o = objs.get(num);
+      let out = "";
+      if (o.raw !== null){
+        const d = o.val || {};
+        let f = doc.get(d.Filter); if (f && !Array.isArray(f)) f = [f];
+        f = (f || []).map(x => x && x.n);
+        out = o.raw;
+        for (const name of f){
+          if (name === "FlateDecode" || name === "Fl") out = bytesToLatin1(await inflateBytes(latin1ToBytes(out), "deflate"));
+          else if (name === "ASCII85Decode" || name === "A85") out = pdfAscii85(out);
+          else if (name === "ASCIIHexDecode" || name === "AHx") out = pdfParse("<" + out.replace(/>[\s\S]*$/, "") + ">", 0)[0].str;
+          else { out = ""; break; }          // images (DCT/JBIG2…) and LZW carry no text we need
+        }
+      }
+      cache.set(num, out);
+      return out;
+    }
+  };
+  // Expand compressed object streams (PDF 1.5+): most modern PDFs keep page & font dicts in here.
+  for (const [num, o] of [...objs]){
+    if (!o.val || !o.val.Type || o.val.Type.n !== "ObjStm") continue;
+    const data = await doc.stream({ ref: num });
+    const first = o.val.First || 0, n = o.val.N || 0;
+    const head = data.slice(0, first).trim().split(/\s+/).map(Number);
+    for (let k = 0; k < n; k++){
+      const on = head[2*k], off = head[2*k + 1];
+      if (!objs.has(on)) objs.set(on, { val: pdfParse(data, first + off)[0], raw: null });
+    }
+  }
+  return doc;
+}
+
+/** ToUnicode CMap → { bytes: 1|2, map: Map(code → string) } */
+function pdfParseCMap(text){
+  const map = new Map(); let bytes = 1;
+  const utf16 = h => { let r = ""; for (let i = 0; i + 3 < h.length + 0; i += 4) r += String.fromCharCode(parseInt(h.slice(i, i + 4), 16)); return r || String.fromCharCode(parseInt(h, 16)); };
+  const csr = /begincodespacerange\s*<([0-9a-fA-F]+)>/.exec(text);
+  if (csr) bytes = Math.max(1, Math.ceil(csr[1].length / 2));
+  for (const blk of text.split("beginbfchar").slice(1)){
+    const body = blk.split("endbfchar")[0];
+    const r = /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]*)>/g; let m;
+    while ((m = r.exec(body))) map.set(parseInt(m[1], 16), utf16(m[2]));
+  }
+  for (const blk of text.split("beginbfrange").slice(1)){
+    const body = blk.split("endbfrange")[0];
+    const r = /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*(<([0-9a-fA-F]+)>|\[([^\]]*)\])/g; let m;
+    while ((m = r.exec(body))){
+      const lo = parseInt(m[1], 16), hi = parseInt(m[2], 16);
+      if (hi - lo > 0xffff) continue;
+      if (m[4] !== undefined){
+        const base = m[4];
+        const last = parseInt(base.slice(-4), 16);
+        for (let c = lo; c <= hi; c++) map.set(c, utf16(base.slice(0, -4) + (last + c - lo).toString(16).padStart(4, "0")));
+      } else {
+        const list = (m[5].match(/<([0-9a-fA-F]+)>/g) || []).map(x => utf16(x.slice(1, -1)));
+        for (let c = lo; c <= hi && c - lo < list.length; c++) map.set(c, list[c - lo]);
+      }
+    }
+  }
+  return { bytes, map };
+}
+
+const PDF_WINANSI_HI = { 0x91:"‘", 0x92:"’", 0x93:"“", 0x94:"”", 0x95:"•", 0x96:"–", 0x97:"—", 0x85:"…", 0x99:"™" };
+
+async function pdfFontDecoders(doc, resources){
+  const fonts = {};
+  const fd = doc.get(doc.get(resources) && doc.get(resources).Font) || {};
+  for (const name of Object.keys(fd)){
+    const f = doc.get(fd[name]) || {};
+    const type0 = f.Subtype && f.Subtype.n === "Type0";
+    let cmap = null;
+    if (f.ToUnicode && f.ToUnicode.ref !== undefined) cmap = pdfParseCMap(await doc.stream(f.ToUnicode));
+    fonts[name] = { bytes: cmap ? cmap.bytes : (type0 ? 2 : 1), map: cmap ? cmap.map : null };
+  }
+  return fonts;
+}
+function pdfDecodeString(str, font){
+  if (!font) font = { bytes: 1, map: null };
+  let out = "";
+  for (let i = 0; i < str.length; i += font.bytes){
+    let code = str.charCodeAt(i);
+    if (font.bytes === 2) code = (code << 8) | (str.charCodeAt(i + 1) || 0);
+    if (font.map && font.map.has(code)) out += font.map.get(code);
+    else if (font.bytes === 1) out += PDF_WINANSI_HI[code] || String.fromCharCode(code);
+  }
+  return out;
+}
+
+/** Runs a page / form content stream and returns its text, one visual line per "\n". */
+async function pdfContentText(doc, content, resources, depth){
+  const fonts = await pdfFontDecoders(doc, resources);
+  const xobj = doc.get(doc.get(resources) && doc.get(resources).XObject) || {};
+  let out = "", font = null, ops = [], lastY = null;
+  const nl = () => { if (out && !out.endsWith("\n")) out += "\n"; };
+  const sp = () => { if (out && !/\s$/.test(out)) out += " "; };
+  let i = 0;
+  while (i < content.length){
+    const [v, j] = pdfParse(content, i);
+    if (j <= i){ i++; continue; }
+    i = j;
+    if (!v || v.op === undefined){ ops.push(v); continue; }
+    const op = v.op;
+    if (op === "ID"){ const e = content.indexOf("EI", i); i = e < 0 ? content.length : e + 2; ops = []; continue; }
+    if (op === "Tf") font = fonts[ops[0] && ops[0].n] || null;
+    else if (op === "Tj" && ops[0] && ops[0].str !== undefined) out += pdfDecodeString(ops[0].str, font);
+    else if ((op === "'" || op === '"') && ops.length){ nl(); const t = ops[ops.length - 1]; if (t && t.str !== undefined) out += pdfDecodeString(t.str, font); }
+    else if (op === "TJ" && Array.isArray(ops[0])){
+      for (const e of ops[0]){
+        if (e && e.str !== undefined) out += pdfDecodeString(e.str, font);
+        else if (typeof e === "number" && e < -180) sp();
+      }
+    }
+    else if (op === "Td" || op === "TD"){ if (Math.abs(ops[1] || 0) > 0.5) nl(); else if ((ops[0] || 0) > 0.5) sp(); }
+    else if (op === "T*") nl();
+    else if (op === "Tm"){ const y = ops[5]; if (lastY !== null && Math.abs(y - lastY) > 0.5) nl(); else sp(); lastY = y; }
+    else if (op === "BT") lastY = null;
+    else if (op === "ET") sp();
+    else if (op === "Do" && depth < 4 && ops[0]){
+      const ref = xobj[ops[0].n];
+      const x = doc.get(ref);
+      if (x && x.Subtype && x.Subtype.n === "Form"){ nl(); out += await pdfContentText(doc, await doc.stream(ref), x.Resources || resources, depth + 1); nl(); }
+    }
+    ops = [];
+  }
+  return out;
+}
+
+/** PDF bytes → text. Pages in document order, separated by a form feed. */
+async function extractPdfText(u8, openedDoc){
+  const doc = openedDoc || await pdfOpen(u8);
+  const isType = (v, t) => v && v.Type && v.Type.n === t;
+  const pages = [];
+  const walk = (ref, inherited, guard) => {
+    const node = doc.get(ref);
+    if (!node || guard > 40) return;
+    const res = node.Resources !== undefined ? node.Resources : inherited;
+    if (Array.isArray(doc.get(node.Kids))) for (const k of doc.get(node.Kids)) walk(k, res, guard + 1);
+    else if (isType(node, "Page") || node.Contents !== undefined) pages.push({ node, res });
+  };
+  // Root of the page tree = the /Pages node with no /Parent.
+  for (const [num, o] of doc.objs){
+    if (isType(o.val, "Pages") && !o.val.Parent){ walk({ ref: num }, undefined, 0); break; }
+  }
+  if (!pages.length) for (const [, o] of doc.objs) if (isType(o.val, "Page")) pages.push({ node: o.val, res: o.val.Resources });
+  const texts = [];
+  for (const p of pages){
+    let c = p.node.Contents; const arr = doc.get(c);
+    const refs = Array.isArray(arr) ? arr : [c];
+    let content = "";
+    for (const r of refs) content += (await doc.stream(r)) + "\n";
+    texts.push(await pdfContentText(doc, content, p.res, 0));
+  }
+  return texts.join("\n\f\n");
+}
+
+/* ---------------------------------------------------------- .docx --- */
+async function extractDocxText(u8){
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  let eocd = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 66000); i--) if (dv.getUint32(i, true) === 0x06054b50){ eocd = i; break; }
+  if (eocd < 0) throw new Error("This doesn't look like a Word .docx file.");
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const wanted = /^word\/(document|header\d*|footer\d*)\.xml$/;
+  const parts = [];
+  for (let k = 0; k < count && dv.getUint32(p, true) === 0x02014b50; k++){
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true);
+    const nlen = dv.getUint16(p + 28, true), xlen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
+    const loc = dv.getUint32(p + 42, true);
+    const name = bytesToLatin1(u8.subarray(p + 46, p + 46 + nlen));
+    p += 46 + nlen + xlen + clen;
+    if (!wanted.test(name)) continue;
+    const ds = loc + 30 + dv.getUint16(loc + 26, true) + dv.getUint16(loc + 28, true);
+    const data = u8.subarray(ds, ds + csize);
+    const raw = method === 0 ? data : method === 8 ? await inflateBytes(data, "deflate-raw") : new Uint8Array(0);
+    parts.push({ name, xml: new TextDecoder("utf-8").decode(raw) });
+  }
+  parts.sort((a, b) => (a.name === "word/document.xml" ? -1 : 0) - (b.name === "word/document.xml" ? -1 : 0));
+  if (!parts.length) throw new Error("No document text found in this .docx.");
+  return parts.map(x => xmlToText(x.xml)).join("\n");
+}
+function xmlToText(xml){
+  return xml
+    .replace(/<w:tab\b[^>]*\/>/g, "\t").replace(/<w:(br|cr)\b[^>]*\/>/g, "\n")
+    .replace(/<\/w:p>/g, "\n").replace(/<\/w:tc>/g, " \t ")
+    .replace(/<w:sym\b[^>]*w:char="(F0FE|F078|2612|2611)"[^>]*\/>/gi, "[X]")
+    .replace(/<w14:checked w14:val="1"\/>/g, "[X]")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(+d)).replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&amp;/g, "&");
+}
+
+/** File → { text, form }. text is unredacted (always pass it through
+ *  redactPaymentData next); form holds fill-in field values for PDFs that
+ *  have them (payment fields already skipped), else null. */
+async function extractContract(file){
+  const u8 = new Uint8Array(await file.arrayBuffer());
+  const head = bytesToLatin1(u8.subarray(0, 8));
+  if (head.startsWith("%PDF")){
+    const doc = await pdfOpen(u8);
+    const form = pdfFormValues(doc);
+    return { text: await extractPdfText(u8, doc), form: Object.keys(form).length ? form : null };
+  }
+  if (head.startsWith("PK\x03\x04")) return { text: await extractDocxText(u8), form: null };
+  if (head.startsWith("\xD0\xCF\x11\xE0")) throw new Error("Old .doc format isn't supported. Save it as .docx or PDF, or paste the text.");
+  return { text: new TextDecoder("utf-8").decode(u8), form: null };
+}
+
+/* ------------------------------------------------- payment scrubbing --- */
+function luhnOk(d){
+  let sum = 0, alt = false;
+  for (let i = d.length - 1; i >= 0; i--){ let n = +d[i]; if (alt){ n *= 2; if (n > 9) n -= 9; } sum += n; alt = !alt; }
+  return sum % 10 === 0;
+}
+/** Removes payment-card / bank details. Returns { text, removed }. */
+function redactPaymentData(text){
+  let removed = 0;
+  const hit = r => { removed++; return r; };
+  text = text.replace(/\d(?:[ \-.]?\d){11,18}/g, m => {
+    const d = m.replace(/\D/g, "");
+    return d.length >= 13 && d.length <= 19 && luhnOk(d) ? hit("[card number removed]") : m;
+  });
+  text = text.replace(/\b(CVV2?|CVC2?|CID|CSC|security code|card code|verification (?:code|number))\b([^\n]{0,30})/gi,
+    (m, l, rest) => /\d/.test(rest) ? hit(l + " [removed]") : m);
+  text = text.replace(/\b(exp(?:iration|iry)?\.?(?:\s*date)?)(\s*[:#]?\s*)(\d{1,2}\s*[\/\-]\s*\d{2,4})/gi, (m, l) => hit(l + " [removed]"));
+  text = text.replace(/\b((?:bank\s+)?(?:account|acct|routing|aba)\.?\s*(?:no\.?|number|#)?)(\s*[:#]?\s*)([\d\- ]{5,20}\d)/gi, (m, l) => hit(l + " [removed]"));
+  return { text, removed };
+}
+
+/* ------------------------------------------------------- matching --- */
+// Label words that may introduce each field in a contract (in addition to
+// the field's own label). Regex sources, matched case-insensitively.
+const CONTRACT_LABELS = {
+  B6:  ["bath area", "project type", "conversion", "remodel type", "installation type"],
+  B7:  ["wall system", "wall type", "surround type", "collection"],
+  B9:  ["pattern", "wall style", "tile style", "wall design", "texture"],
+  B10: ["back wall colou?r", "wall colou?r", "surround colou?r", "colou?r"],
+  B11: ["side wall colou?r", "wall colou?r", "surround colou?r"],
+  B12: ["back wall(?: length| width| size)?", "length", "wall width"],
+  B13: ["side wall(?: depth| length| width)?", "depth"],
+  B14: ["(?:surround |wall )?height"],
+  B15: ["inside corner trim", "corner trim"],
+  B16: ["perimeter (?:edge )?trim", "edge trim", "trim colou?r"],
+  B17: ["t[ -]trim"],
+  B19: ["ceiling panel", "ceiling"],
+  B20: ["ceiling panel colou?r", "ceiling colou?r"],
+  B21: ["window kit", "window trim", "window"],
+  B22: ["window kit colou?r", "window colou?r"],
+  B25: ["tub type", "pan type", "shower pan", "shower base", "base type", "bathtub", "\\bbase\\b"],
+  B26: ["tub size", "pan size", "base size", "dimension", "tub/pan", "shower pan", "bathtub"],
+  B28: ["tub colou?r", "pan colou?r", "base colou?r"],
+  B29: ["skirt"],
+  B30: ["drain(?: location| side| position)?"],
+  B31: ["drain colou?r", "drain finish"],
+  B33: ["valve(?: design| style| trim)?", "faucet", "fixture(?: style)?", "trim kit"],
+  B34: ["valve(?: colou?r| finish)", "fixture colou?r", "fixture finish", "\\bfinish\\b", "head colou?r"],
+  B36: ["shower head(?: upgrade)?", "rain"],
+  B37: ["shower spa", "hand ?held", "shower system"],
+  B38: ["door", "shower rod", "curtain rod", "\\brod\\b", "enclosure"],
+  B39: ["door colou?r", "door finish", "rod colou?r", "rod finish", "hardware finish"],
+  B40: ["seat", "bench"],
+  B41: ["seat colou?r", "bench colou?r"],
+  B42: ["seat top", "bench top"],
+  B43: ["grab bar(?: 1)?"],
+  B44: ["grab bar(?: 1)?(?: length| size)?"],
+  B45: ["grab bar 2", "second grab bar", "2nd grab bar"],
+  B46: ["grab bar 2(?: length| size)?"],
+  B48: ["shel(?:f|ves)", "corner shelf"],
+  B49: ["shelf colou?r"],
+  B50: ["grab shelf", "grab bar shelf"],
+  B51: ["grab shelf size", "grab shelf"],
+  B52: ["grab shelf colou?r", "grab shelf finish"],
+  B53: ["caddy"],
+  B54: ["foot (?:pedestal|rest)", "pedestal"],
+  B55: ["silicone", "caulk"],
+  B57: ["soap dish"],
+  B58: ["soap dish colou?r"]
+};
+// Words a contract may use for an option code / value.
+const CONTRACT_ALIASES = (() => {
+  const a = {
+    MB: ["matte black", "black"], BN: ["brushed nickel", "satin nickel"], CH: ["chrome", "polished chrome"],
+    ORB: ["oil rubbed bronze", "oil-rubbed bronze", "bronze"], PC: ["polished chrome"], WH: ["white"],
+    "Stock Acrylic Shower Pan": ["shower pan", "shower base"], "Stock Acrylic Bathtub": ["bathtub", "bath tub", "soaking tub"],
+    "Custom Acrylic Shower Pan": ["custom pan", "custom shower pan", "custom base"],
+    "Shower With Tub Adjacent": ["tub adjacent", "shower with tub"],
+    "Smooth 3x6 Simualted Subway Tile": ["smooth 3x6 simulated subway tile", "3x6 subway"],
+    "Center": ["center drain", "centre drain"], "Left": ["left drain"], "Right": ["right drain"]
+  };
+  for (const r of (typeof CONFIG !== "undefined" && CONFIG.siliconeTable) || []) (a[r.code] = a[r.code] || []).push(r.name);
+  return a;
+})();
+// Fields whose options are generic (colour codes, Yes/No…) — only matched
+// near one of their labels, never by a whole-document search.
+const CONTRACT_LABEL_ONLY = new Set(["B37","B43","B10","B11","B15","B16","B17","B19","B20","B21","B22","B28","B29","B30","B31",
+  "B34","B36","B39","B41","B42","B44","B45","B46","B49","B50","B51","B52","B54","B55","B58"]);
+
+function cNorm(s){
+  return " " + String(s).toLowerCase()
+    .replace(/[“”″]/g, '"').replace(/×/g, "x")
+    .replace(/(\d)\s*(?:"|''|inches|inch|in\.?)(?![a-z])/g, "$1in")
+    .replace(/(\d)\s*(?:'|feet|foot|ft\.?)(?![a-z])/g, "$1ft")
+    .replace(/(\d+)(?:in)?\s*x\s*(\d+)(?:in)?/g, "$1in x $2in")
+    .replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim() + " ";
+}
+function cTokens(s){ return cNorm(s).trim().split(" ").filter(Boolean); }
+
+/** Score how well option phrase `p` appears in window text `w` (0..1). */
+function phraseScore(p, wNorm, wRaw){
+  const pt = raw(p).trim();
+  if (/^[A-Z]{2,3}$/.test(pt)) return new RegExp("(^|[^A-Za-z])" + pt + "([^A-Za-z]|$)").test(wRaw) ? 1 : 0;   // colour code: exact, case-sensitive
+  const n = cNorm(pt);
+  if (wNorm.includes(n)) return 1;
+  const toks = n.trim().split(" ").filter(t => t.length > 1 || /\d/.test(t));
+  if (toks.length < 3) return 0;
+  const set = new Set(wNorm.trim().split(" "));
+  const hits = toks.filter(t => set.has(t)).length;
+  return hits / toks.length;
+}
+function optionPhrases(opt){
+  const o = raw(opt).trim();
+  const out = [o].concat(CONTRACT_ALIASES[o] || []);
+  // "Alabaster White (AW)" style options: also try the bare name
+  const m = /^(.*?)\s*\(([A-Z]{2,3})\)$/.exec(o);
+  if (m) out.push(m[1], m[2]);
+  return out;
+}
+
+// One-word labels that also appear in unrelated lines → lower confidence.
+const CONTRACT_GENERIC_LABELS = new Set(["colou?r", "length", "depth", "\\bfinish\\b", "pattern", "texture", "collection",
+  "window", "ceiling", "rain", "\\brod\\b", "\\bbase\\b", "dimension", "bathtub", "door", "seat", "bench", "enclosure"]);
+
+const NO_VALUE = new Set(["", "n/a", "none"]);
+
+/** All label hits for a field: [{index, end}] in the text. */
+function labelHits(text, cell, label){
+  const srcs = [label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s*\/\s*/g, "\\s*/\\s*")].concat(CONTRACT_LABELS[cell] || []);
+  const hits = [];
+  for (const src of srcs){
+    const r = new RegExp(src, "gi"); let m;
+    while ((m = r.exec(text))){ hits.push({ index: m.index, end: m.index + m[0].length, specific: !CONTRACT_GENERIC_LABELS.has(src) }); if (!m[0]) r.lastIndex++; }
+  }
+  return hits;
+}
+/** Text after a label: rest of that line + the next line (contracts put values on either). */
+function windowAfter(text, end){
+  const a = text.indexOf("\n", end);
+  const b = a < 0 ? -1 : text.indexOf("\n", a + 1);
+  const stop = Math.min(end + 160, b < 0 ? text.length : b);
+  return text.slice(end, stop);
+}
+function snippetAround(text, start, end){
+  const a = Math.max(0, start - 30), b = Math.min(text.length, end + 50);
+  return (a > 0 ? "…" : "") + text.slice(a, b).replace(/\s+/g, " ").trim() + (b < text.length ? "…" : "");
+}
+function parseInches(s){
+  const m = /(\d{2,3})(?:\s*(?:-|\s)\s*(\d)\s*\/\s*(\d{1,2})|\.(\d+))?/.exec(s);
+  if (!m) return null;
+  let v = +m[1];
+  if (m[2]) v += (+m[2]) / (+m[3]);
+  if (m[4]) v = parseFloat(m[1] + "." + m[4]);
+  return v >= 20 && v <= 130 ? v : null;
+}
+
+/** Proposes values for the job fields and every Selection Sheet field.
+ *  Returns { fields:[{cell,label,value,confidence,snippet}], job:[…], missing:[label…] }. */
+function matchContract(text){
+  const s = {};
+  const fields = [], missing = [];
+  const lower = text.toLowerCase();
+  for (const f of FIELDS){
+    if (f.unused) continue;
+    const h = computeHelpers(s);
+    let best = null;
+    if (f.type === "number"){
+      for (const hit of labelHits(text, f.cell, f.label)){
+        const w = windowAfter(text, hit.end);
+        const firstNum = /\d/.exec(w);
+        if (!firstNum || firstNum.index > 25) continue;
+        const v = parseInches(w.slice(firstNum.index));
+        if (v === null) continue;
+        const score = hit.specific ? 2 : 1;
+        if (!best || score > best.score) best = { value: String(v), score, confidence: hit.specific ? "High" : "Medium", snippet: snippetAround(text, hit.index, hit.end + firstNum.index + 6) };
+      }
+    } else {
+      const opts = ((f.options ? f.options(s, h) : []) || []).filter(o => raw(o) !== "");
+      const real = opts.filter(o => !NO_VALUE.has(raw(o).trim().toLowerCase()));
+      const isYesNo = real.length === 2 && real.every(o => /^(yes|no)$/i.test(raw(o).trim()));
+      if (opts.length === 1 && real.length === 0){
+        best = { value: raw(opts[0]), score: 1, confidence: "Auto", snippet: "Only option for this job." };
+      } else if (isYesNo){
+        for (const hit of labelHits(text, f.cell, f.label)){
+          const w = windowAfter(text, hit.end).slice(0, 40);
+          const yes = /^\W{0,6}(yes|y\b|\[x\]|x\b|☒|✓|✔|1\b|included|add)/i.test(w);
+          const no = /^\W{0,6}(no\b|n\b|none|\[ \]|☐|0\b|not included|n\/a)/i.test(w);
+          if (yes || no){ best = { value: raw(real.find(o => new RegExp("^" + (yes ? "yes" : "no") + "$", "i").test(raw(o).trim()))), score: 1, confidence: "High", snippet: snippetAround(text, hit.index, hit.end + 12) }; break; }
+          if (!best && hit.specific) best = { value: raw(real.find(o => /^yes$/i.test(raw(o).trim()))), score: 0.5, confidence: "Low", snippet: snippetAround(text, hit.index, hit.end + 30) };
+        }
+      } else if (real.length){
+        const tryWindow = (wRaw, conf, bonus, snipFn) => {
+          const wNorm = cNorm(wRaw);
+          for (const o of real){
+            let sc = 0;
+            for (const p of optionPhrases(o)) sc = Math.max(sc, phraseScore(p, wNorm, wRaw) * (p === raw(o).trim() ? 1 : 0.98));
+            if (sc < 0.75) continue;
+            const total = sc + bonus + raw(o).length / 10000;     // tie-break: longer, more specific option
+            const exactLong = sc >= 0.98 && raw(o).trim().length >= 12;
+            if (!best || total > best.score) best = { value: raw(o), score: total, confidence: exactLong ? "High" : sc >= 0.98 ? conf : "Medium", snippet: snipFn(o) };
+          }
+        };
+        for (const hit of labelHits(text, f.cell, f.label)){
+          const w = windowAfter(text, hit.end);
+          tryWindow(w, hit.specific ? "High" : "Medium", hit.specific ? 1 : 0.5, () => snippetAround(text, hit.index, hit.end + Math.min(w.length, 60)));
+        }
+        // Contract explicitly says N/A / None next to the label → take the sheet's own "N/A"/"None" option.
+        const naOpt = opts.find(o => NO_VALUE.has(raw(o).trim().toLowerCase()));
+        if (!best && naOpt){
+          for (const hit of labelHits(text, f.cell, f.label)){
+            if (!hit.specific) continue;
+            const w = windowAfter(text, hit.end);
+            if (/^[\s:\-\u2013\t]{0,8}(n\/a|none|no\b|not included)/i.test(w)){
+              best = { value: raw(naOpt), score: 1, confidence: "High", snippet: snippetAround(text, hit.index, hit.end + 12) }; break;
+            }
+          }
+        }
+        if (!best && !CONTRACT_LABEL_ONLY.has(f.cell)){
+          // Whole-document search, only accepted when exactly one option is found.
+          const found = [];
+          const docNorm = cNorm(text);
+          for (const o of real){
+            const ph = optionPhrases(o).filter(p => cNorm(p).trim().length >= 6 || /^tub$/i.test(p));
+            if (ph.some(p => docNorm.includes(cNorm(p)))) found.push(o);
+          }
+          // drop options contained in a longer found option ("Tub" inside "Shower With Tub Adjacent")
+          const distinct = found.filter(o => !found.some(x => x !== o && cNorm(x).includes(cNorm(o))));
+          if (distinct.length === 1){
+            const o = distinct[0];
+            const at = lower.indexOf(raw(o).trim().toLowerCase());
+            best = { value: raw(o), score: 0.9, confidence: "Medium", snippet: at >= 0 ? snippetAround(text, at, at + raw(o).trim().length) : "Mentioned in the contract." };
+          }
+        }
+      }
+    }
+    if (best){
+      s[f.cell] = best.value;
+      if (f.cell === "B10" && !s.B55){ const auto = siliconeForWallColor(s); if (auto) s.B55 = auto; }
+      fields.push({ cell: f.cell, label: f.label, value: best.value, confidence: best.confidence, snippet: best.snippet });
+    } else if ((f.type === "number") || ((f.options ? f.options(s, h) : []) || []).some(o => !NO_VALUE.has(raw(o).trim().toLowerCase()))){
+      missing.push(f.label);
+    }
+  }
+  // Job reference fields
+  const job = [];
+  const jm = (key, label, re, clean) => { const m = re.exec(text); if (m){ const v = clean(m); if (v) job.push({ key, label, value: v, snippet: snippetAround(text, m.index, m.index + m[0].length) }); } };
+  jm("customer", "Customer name", /\b(?:customer|homeowner|buyer|purchaser|client|owner)(?:\(s\))?(?:'s)?(?:\s+name)?\s*[:\-]\s*([A-Za-z][A-Za-z .,'&\-]{1,60})/i, m => m[1].split(/\s{2,}|\t|\n/)[0].trim().replace(/[,.]$/, ""));
+  jm("job", "Contract number", /\b(?:contract|agreement|job|order|proposal)\s*(?:no\.?|number|num|#)\s*[:#]?\s*([A-Z0-9][A-Z0-9\-\/]{2,24})/i, m => m[1]);
+  jm("date", "Date", /\b(?:contract |agreement |sale )?date\s*[:\-]?\s*(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/i,
+     m => { let y = +m[3]; if (y < 100) y += 2000; const mo = +m[1], d = +m[2]; return mo >= 1 && mo <= 12 && d >= 1 && d <= 31 ? y + "-" + String(mo).padStart(2, "0") + "-" + String(d).padStart(2, "0") : null; });
+  return { fields, job, missing };
+}
+
+
+/* ------------------------------------------- fillable contract form --- */
+/* Mike's contract ("Jacuzzi Contract Rev MP 10-23-26.pdf") is an Acrobat
+ * fill-in form, so a filled copy carries every selection as a named field
+ * value. Reading those values is far more reliable than reading page text,
+ * so when a PDF has that form we use it and skip the text matcher.
+ * Payment fields (card number, CVV, expiry, card holder, CC text boxes) are
+ * skipped by name while walking the form and are never read. */
+const FORM_SKIP = /card|cvv|cvc|expir|^cc|cctext|amex|discover|payment|signature|sign\d|initial/i;
+
+function pdfTextValue(v){
+  if (v && v.n !== undefined) return v.n;
+  if (!v || v.str === undefined) return Array.isArray(v) ? v.map(pdfTextValue).join(", ") : "";
+  const s = v.str;
+  if (s.charCodeAt(0) === 0xFE && s.charCodeAt(1) === 0xFF){
+    let r = ""; for (let i = 2; i + 1 < s.length; i += 2) r += String.fromCharCode((s.charCodeAt(i) << 8) | s.charCodeAt(i + 1));
+    return r;
+  }
+  return s.replace(/[\x80-\x9f]/g, c => PDF_WINANSI_HI[c.charCodeAt(0)] || "");
+}
+/** { "FieldName": "value" } for every filled-in AcroForm field (payment fields skipped). */
+function pdfFormValues(doc){
+  let cat = null;
+  for (const [, o] of doc.objs) if (o.val && o.val.Type && o.val.Type.n === "Catalog"){ cat = o.val; break; }
+  const af = cat && doc.get(cat.AcroForm);
+  const out = {};
+  if (!af) return out;
+  const walk = (ref, prefix, depth) => {
+    const node = doc.get(ref);
+    if (!node || depth > 12) return;
+    const part = node.T !== undefined ? pdfTextValue(node.T) : null;
+    const name = part === null ? prefix : (prefix ? prefix + "." + part : part);
+    if (FORM_SKIP.test(name)) return;
+    if (node.V !== undefined && name && !(name in out)) out[name] = pdfTextValue(doc.get(node.V));
+    const kids = doc.get(node.Kids);
+    if (Array.isArray(kids)) for (const k of kids) walk(k, name, depth + 1);
+  };
+  for (const f of doc.get(af.Fields) || []) walk(f, "", 0);
+  return out;
+}
+function isContractForm(form){
+  return ["NewWallSystemType", "NewTubShowerPanType", "WallSystemPattern", "NewBathArea"].filter(k => k in form).length >= 3;
+}
+
+// Contract wording → configurator codes
+const FORM_COLOR_NAMES = {
+  "canyon":"CN", "farm":"FM", "linen":"LN", "terazzo":"TZ", "terrazzo":"TZ", "urban":"UB",
+  "chrome":"CH", "chome":"CH", "polished chrome":"PC", "matte chrome":"MC", "brushed nickel":"BN",
+  "matte black":"MB", "oil rubbed bronze":"ORB", "white":"WH"
+};
+function formColorCode(v){
+  v = String(v || "").replace(/\s+/g, " ").trim();
+  const m = /^([A-Z]{2,3})\s*-/.exec(v);
+  if (m) return m[1];
+  return FORM_COLOR_NAMES[v.toLowerCase()] || "";
+}
+function formEmpty(v){ return /^(\s*|-+|--select--|n\/?a|none|not included)$/i.test(String(v || "").trim()); }
+function formInches(v){
+  v = String(v || "").trim();
+  if (!v) return null;
+  const n = parseInches(v);
+  if (n !== null) return n;
+  const f = parseFloat(v);
+  return isFinite(f) && f > 0 ? f : null;
+}
+/** Best configurator option for a contract phrase: exact (trim/case-insensitive) first,
+ *  then token overlap. Returns [option, exact?] or null. */
+function bestOptionFor(options, phrase){
+  const p = cNorm(phrase);
+  const exact = options.find(o => cNorm(o) === p);
+  if (exact !== undefined) return [exact, true];
+  let best = null, bestSc = 0;
+  const set = new Set(p.trim().split(" "));
+  for (const o of options){
+    const t = cNorm(o).trim().split(" ").filter(x => x.length > 1 || /\d/.test(x));
+    if (!t.length) continue;
+    const sc = t.filter(x => set.has(x)).length / Math.max(t.length, set.size);
+    if (sc > bestSc){ bestSc = sc; best = o; }
+  }
+  return bestSc >= 0.6 ? [best, false] : null;
+}
+
+/** Maps the contract form's field values to Selection Sheet proposals.
+ *  Returns { fields, job, missing, notes } like matchContract(). */
+function mapContractForm(F){
+  const g = k => String(F[k] == null ? "" : F[k]).replace(/\s+/g, " ").trim();
+  const P = {};            // cell → { value, conf, src }
+  const notes = [];
+  const set = (cell, value, src, conf) => { if (value !== "" && value != null) P[cell] = { value: String(value), conf: conf || "High", src }; };
+  const said = (label, key) => label + ": " + g(key);
+
+  // --- New material overview
+  const area = g("NewBathArea");
+  if (/adjacent/i.test(area)) set("B6", "Shower With Tub Adjacent", said("New Bath Area", "NewBathArea"));
+  else if (/^shower$/i.test(area)) set("B6", "Shower ", said("New Bath Area", "NewBathArea"));
+  else if (/^tub$/i.test(area)) set("B6", "Tub", said("New Bath Area", "NewBathArea"));
+  const ws = g("NewWallSystemType");
+  const sig = /signature/i.test(ws), life = /lifestyle/i.test(ws);
+  if (sig) set("B7", "Signature", said("New Wall System Type", "NewWallSystemType"));
+  else if (life) set("B7", "Lifestyle", said("New Wall System Type", "NewWallSystemType"));
+
+  // --- Walls
+  const pat = g("WallSystemPattern");
+  if (sig && !formEmpty(pat)){
+    const b = bestOptionFor(CONFIG.F_patternSignature, pat);
+    if (b) set("B9", b[0], said("Wall System Pattern", "WallSystemPattern"), b[1] ? "High" : "Medium");
+  }
+  const side = formColorCode(g("SideWallColor"));
+  const backRaw = g("BackWallColor");
+  const back = /same as side/i.test(backRaw) ? side : formColorCode(backRaw);
+  const patColor = life ? formColorCode(pat) : "";
+  if (back || patColor) set("B10", back || patColor, back ? said("Back Wall Color", "BackWallColor") : said("Wall System Pattern", "WallSystemPattern"));
+  if (side || patColor) set("B11", side || patColor, side ? said("Side Wall Color", "SideWallColor") : said("Wall System Pattern", "WallSystemPattern"));
+  const wallColor = back || side || patColor;
+  if (life){
+    const ict = formColorCode(g("InsideCornerTrim")), pet = formColorCode(g("PerimeterEdgeTrim"));
+    if (ict) set("B15", ict, said("Inside Corner Trim", "InsideCornerTrim"));
+    if (pet){
+      set("B16", pet, said("Perimeter Edge Trim", "PerimeterEdgeTrim"));
+      set("B17", pet, "Contract has no T Trim choice. Copied from Perimeter Edge Trim.", "High");
+    }
+  } else if (sig){
+    set("B16", "N/A", "Perimeter edge trim isn't used on Signature walls.", "High");
+  }
+  const ceil = g("CeilingPanel");
+  if (/^included/i.test(ceil)) set("B19", "Yes", said("Ceiling Panel", "CeilingPanel"));
+  else if (/not included/i.test(ceil)) set("B19", "No", said("Ceiling Panel", "CeilingPanel"));
+  const ceilC = g("CeilingPanelColor");
+  if (/match walls/i.test(ceilC)) set("B20", wallColor, said("Ceiling Panel Color", "CeilingPanelColor"));
+  else if (formColorCode(ceilC)) set("B20", formColorCode(ceilC), said("Ceiling Panel Color", "CeilingPanelColor"));
+  const win = g("WindowTrimKit");
+  if (/^included/i.test(win)) set("B21", "yes", said("Window Trim Kit", "WindowTrimKit"));
+  else if (/not included/i.test(win)) set("B21", "no", said("Window Trim Kit", "WindowTrimKit"));
+  if (formColorCode(g("WindowKitColor"))) set("B22", formColorCode(g("WindowKitColor")), said("Window Kit Color", "WindowKitColor"));
+
+  // New surround dimensions (contract page 2 of 3: "Back Wall Finished Length", "Finished Depth", "Finished Surround Height")
+  const dim = (cell, key, label) => { const v = formInches(F[key]); if (v !== null) set(cell, v, label + ": " + g(key)); };
+  dim("B12", "RSFC.2.1.0", "Back Wall Finished Length");
+  dim("B13", "RSFC.1.1", "Finished Depth");
+  dim("B14", "RSFC.0.1", "Finished Surround Height");
+
+  // --- Base
+  const pan = g("NewTubShowerPanType");
+  const isTub = /bathtub/i.test(pan);
+  if (isTub) set("B25", "Stock Acrylic Bathtub ", said("Tub/Shower Pan Type", "NewTubShowerPanType"));
+  else if (/stock acrylic shower pan/i.test(pan)) set("B25", "Stock Acrylic Shower Pan ", said("Tub/Shower Pan Type", "NewTubShowerPanType"));
+  else if (/custom acrylic shower pan/i.test(pan)) set("B25", "Custom Acrylic Shower Pan ", said("Tub/Shower Pan Type", "NewTubShowerPanType"));
+  else if (/corner square/i.test(pan)) notes.push("Contract has a Corner Square Shower Pan, which the configurator doesn't list. Pick the base by hand.");
+  else if (/walls only/i.test(pan)) notes.push("Contract is Walls Only (no tub or pan).");
+  const dims = g("TubPanDimensions");
+  if (/custom/i.test(dims)){
+    const d = g("CustDepth"), l = g("CustLength");
+    if (d || l) set("B27", (d || "?") + " x " + (l || "?"), "Custom pan size (Depth x Length): " + d + " x " + l);
+    notes.push("Custom pan: " + dims.replace(/\s*-?\s*Specify Size.*$/i, "") + (d || l ? " " + d + " x " + l : "") + ". Must be added to the order by hand.");
+  } else if (!formEmpty(dims)){
+    const all = [].concat(CONFIG.G_centerDrainPans, CONFIG.H_sideDrainPans, CONFIG.I_centerOrSidePans, CONFIG.J_bathTubs);
+    const b = bestOptionFor(all, dims);
+    if (b) set("B26", b[0], said("Tub/Pan Dimensions", "TubPanDimensions"), b[1] ? "High" : "Medium");
+  }
+  if (formColorCode(g("TubPanColor"))) set("B28", formColorCode(g("TubPanColor")), said("Tub/Pan Color", "TubPanColor"));
+  if (/straight/i.test(g("TubSkirt"))) set("B29", "Straight", said("Tub Skirt", "TubSkirt"));
+  else if (/andes/i.test(g("TubSkirt"))) set("B29", "Andes", said("Tub Skirt", "TubSkirt"));
+  if (/^(left|right|center)$/i.test(g("DrainLocation"))) set("B30", g("DrainLocation").replace(/^./, c => c.toUpperCase()), said("Drain Location", "DrainLocation"));
+
+  // --- Fixtures
+  const valve = g("ValveDesign"), finish = formColorCode(g("FixtureFinish"));
+  const vName = /riempi/i.test(valve) ? "Riempi" : /aperto/i.test(valve) ? "Aperto" : /vazia/i.test(valve) ? "Vazia" : "";
+  if (vName) set("B33", vName, said("Valve Design", "ValveDesign"));
+  else if (/deluxe shower system/i.test(valve)) notes.push("Valve is the Jacuzzi Deluxe Shower System. Pick the Shower Valve Design by hand.");
+  else if (/existing valve/i.test(valve)) notes.push("Existing valve stays, so no valve is ordered.");
+  if (finish) set("B34", finish, said("Fixture Finish", "FixtureFinish"));
+  if (finish) set("B31", finish, "Contract has no drain colour. Matched to Fixture Finish (" + g("FixtureFinish") + ").", "High");
+  const hh = g("SlideBarHH");
+  if (/deluxe shower system/i.test(valve)) set("B37", "Deluxe", said("Valve Design", "ValveDesign"), "High");
+  else if (/multi-?function/i.test(hh)) set("B37", "Multi-Function", said("Slide Bar / Hand Held", "SlideBarHH"), "High");
+  else if (/handheld/i.test(hh)) set("B37", "Wand and Diverter", said("Slide Bar / Hand Held", "SlideBarHH"), "High");
+  if (/rain/i.test(hh)) set("B36", "Rain Shower Head", said("Slide Bar / Hand Held", "SlideBarHH"), "Medium");
+
+  const door = g("Shower DoorCurtain Rod");
+  let doorOpt = "";
+  if (/curved curtain rod/i.test(door)) doorOpt = "5 Foot Deluxe Curved Shower Rod";
+  else if (/straight curtain rod/i.test(door)) doorOpt = "5 Foot Deluxe Straight Shower Rod";
+  else if (/corner shower door/i.test(door)) doorOpt = /42\s*x\s*42/i.test(door) ? '42" x 42" Corner Shower Door' : '36" x 36" Corner Shower Door';
+  else if (/sliding door/i.test(door)){
+    const roller = /concealed/i.test(door) ? "Concealed" : "Exposed", glass = /frosted/i.test(door) ? "Frosted" : "Clear";
+    const panLen = /48in L/i.test(P.B26 ? P.B26.value : "") ? 48 : 60;
+    doorOpt = isTub || /^tub$/i.test(area) ? '60" Dual Bypass ' + roller + " Roller " + glass + " Glass Bathtub Door"
+                                           : panLen + '" Dual Bypass ' + roller + " Roller " + glass + " Glass Shower Door";
+  } else if (/customer/i.test(door)) notes.push("Door / rod supplied and installed by the customer.");
+  if (doorOpt) set("B38", doorOpt, said("Shower Door/Curtain Rod", "Shower DoorCurtain Rod"), "High");
+  if (formColorCode(g("ShowerDoorRodFinish"))) set("B39", formColorCode(g("ShowerDoorRodFinish")), said("Shower Door/Rod Finish", "ShowerDoorRodFinish"));
+
+  // Seat
+  const seat = g("Corner Seat Bench"), seatC = g("BenchColor");
+  if (/prairie/i.test(seat)){ set("B40", "Prairie Corner Bench ", said("Corner Seat/Bench", "Corner Seat Bench")); if (wallColor) set("B41", wallColor, said("Corner Seat/Bench Color", "BenchColor")); }
+  else if (/bench shower seat/i.test(seat)){
+    set("B40", "Bench wrap and top ", said("Corner Seat/Bench", "Corner Seat Bench"));
+    if (wallColor) set("B41", wallColor, "Bench wrap matches the back wall colour (per the contract wording).");
+    if (formColorCode(seatC)) set("B42", formColorCode(seatC), said("Corner Seat/Bench Color", "BenchColor"), "Medium");
+  }
+  else if (/white fold/i.test(seat)) set("B40", "Folding White", said("Corner Seat/Bench", "Corner Seat Bench"));
+  else if (/teak fold/i.test(seat)){ set("B40", "Folding Teak ", said("Corner Seat/Bench", "Corner Seat Bench")); if (formColorCode(seatC)) set("B41", formColorCode(seatC), said("Corner Seat/Bench Color", "BenchColor")); }
+
+  // Grab bars (the configurator colours grab bars from the Valve / Head Color)
+  const gbStyle = g("GrabBarStyle");
+  const style = /deluxe/i.test(gbStyle) ? "Deluxe" : /grips/i.test(gbStyle) ? "Grab Bar with Grips" : /none/i.test(gbStyle) ? "N/A" : "";
+  const size = v => { const m = /(\d{2})/.exec(v || ""); return m ? m[1] + '"' : ""; };
+  if (style){
+    set("B43", style, said("Grab Bar Style", "GrabBarStyle"));
+    const s1 = size(g("GrabBar1Size")), s2 = size(g("GrabBar2Size"));
+    if (s1) set("B44", s1, said("Grab Bar 1 Size", "GrabBar1Size"));
+    if (s2){ set("B45", style, "Grab Bar 2 Size is filled in, same style as Grab Bar 1."); set("B46", s2, said("Grab Bar 2 Size", "GrabBar2Size")); }
+    else if (style !== "N/A") set("B45", "N/A", "Grab Bar 2 Size: None");
+    if (+g("GbQty1") > 1 || +g("GbQty2") > 1) notes.push("Contract has a grab bar quantity over 1. Check the grab bar quantities.");
+    const gbf = formColorCode(g("GrabBarFinish"));
+    if (gbf && finish && gbf !== finish) notes.push("Grab bar finish (" + g("GrabBarFinish") + ") differs from the fixture finish. The configurator uses the fixture finish for grab bars.");
+  }
+
+  // Accessories (3 rows: item + colour + qty)
+  if ("ShowerAcc1" in F){
+    set("B48", "None", "No shelf on the contract", "Auto"); set("B50", "No", "No grab shelf on the contract", "Auto");
+    set("B53", "N/A", "No caddy on the contract", "Auto"); set("B54", "N/A", "No foot pedestal on the contract", "Auto");
+    set("B57", "N/A", "No soap dish on the contract", "Auto");
+  }
+  for (const n of [1, 2, 3]){
+    const item = g("ShowerAcc" + n), colRaw = g("AccColor" + n), qty = +g("AccQty" + n) || 1;
+    if (formEmpty(item)) continue;
+    const src = "Shower Accessory " + n + ": " + item + (colRaw && !formEmpty(colRaw) ? " / " + colRaw : "");
+    const col = /match walls/i.test(colRaw) ? "" : formColorCode(colRaw);
+    if (/foot pedestal/i.test(item)){ set("B54", col || "", src); if (!col) delete P.B54; }
+    else if (/tigris/i.test(item)){ set("B57", "Tigris Soap Dish", src); if (col || wallColor) set("B58", col || wallColor, src); }
+    else if (/prairie corner shelf/i.test(item)){ set("B48", "Signature Prairie Corner Shelf", src); set("B49", col || "Match Back Wall Color", src); }
+    else if (/stainless steel corner shelf/i.test(item)){ set("B48", "10in Stainless Steel Corner Shelf", src); if (col) set("B49", col === "CH" ? "PC" : col, src, col === "CH" ? "Medium" : "High"); }
+    else if (/rio grande/i.test(item)) set("B53", "Rio Grande Shower Caddy", src);
+    else if (/signature shower caddy/i.test(item)) set("B53", "Recessed Shower Caddy", src, "High");
+    else if (/grab shelf/i.test(item)){ set("B50", "Yes", src); set("B51", /30/.test(item) ? "30in Grab Bar Shelf" : "20in Grab Shelf", src); if (col) set("B52", col, src); }
+    else notes.push("Accessory not in the configurator: " + item + ". Add it by hand.");
+    if (qty > 1) notes.push(item + ": quantity " + qty + " on the contract. Check the quantity in the output.");
+  }
+
+  // --- Walk the Selection Sheet in order, checking each proposal against the
+  //     options the configurator actually offers given the earlier picks.
+  const s = {}, fields = [], missing = [];
+  for (const f of FIELDS){
+    const p = P[f.cell];
+    const h = computeHelpers(s);
+    const opts = f.type === "select" ? ((f.options ? f.options(s, h) : []) || []).filter(o => raw(o) !== "") : null;
+    if (p){
+      let value = p.value, conf = p.conf, src = p.src;
+      if (opts){
+        const hit = opts.find(o => TRIM(o).toLowerCase() === TRIM(value).toLowerCase());
+        if (hit !== undefined) value = raw(hit);
+        else { conf = "Check"; src = "Contract says “" + value.trim() + "”, which the configurator doesn't offer for these selections. " + src; }
+      }
+      s[f.cell] = value;
+      if (f.cell === "B10" && !P.B55){ const auto = siliconeForWallColor(s); if (auto){ P.B55 = { value: auto, conf: "Auto", src: "Silicone matched to the back wall colour." }; } }
+      fields.push({ cell: f.cell, label: f.label, value, confidence: conf, snippet: src });
+    } else if (opts && opts.length === 1 && NO_VALUE.has(raw(opts[0]).trim().toLowerCase())){
+      s[f.cell] = raw(opts[0]);
+      fields.push({ cell: f.cell, label: f.label, value: raw(opts[0]), confidence: "Auto", snippet: "Only option for this job." });
+    } else if (!f.unused && (f.type === "number" || opts.some(o => !NO_VALUE.has(raw(o).trim().toLowerCase())))){
+      missing.push(f.label);
+    }
+  }
+
+  // --- Job reference
+  const job = [];
+  const placeholder = /^(first name|last name)$/i;
+  const name = [g("FirstName"), g("LastName")].filter(x => x && !placeholder.test(x)).join(" ");
+  if (name) job.push({ key: "customer", label: "Customer name", value: name, snippet: "Job Name: " + name });
+  if (g("Project Number")) job.push({ key: "job", label: "Contract number", value: g("Project Number"), snippet: "Project No.: " + g("Project Number") });
+  const dm = /^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/.exec(g("Date1_af_date"));
+  if (dm){ let y = +dm[3]; if (y < 100) y += 2000; job.push({ key: "date", label: "Date", value: y + "-" + dm[1].padStart(2, "0") + "-" + dm[2].padStart(2, "0"), snippet: "Contract date: " + g("Date1_af_date") }); }
+  if (g("SalesPersonName")) job.push({ key: "staff", label: "Staff name", value: g("SalesPersonName"), snippet: "Salesperson: " + g("SalesPersonName") });
+
+  return { fields, job, missing, notes };
+}
+
+/* ------------------------------------------------------- dialog UI --- */
+let contractProposal = null;
+
+function openContractDialog(){
+  document.getElementById("contract-overlay").hidden = false;
+  showContractStep("pick");
+}
+function closeContractDialog(){
+  document.getElementById("contract-overlay").hidden = true;
+  document.getElementById("contract-file").value = "";
+  document.getElementById("contract-paste").value = "";
+  contractProposal = null;
+}
+function showContractStep(step){
+  document.getElementById("contract-step-pick").hidden = step !== "pick";
+  document.getElementById("contract-step-review").hidden = step !== "review";
+  document.getElementById("contract-apply").hidden = step !== "review";
+  document.getElementById("contract-back").hidden = step !== "review";
+  document.getElementById("contract-read").hidden = step !== "pick";
+}
+function contractStatus(msg, isErr){
+  const n = document.getElementById("contract-status");
+  n.textContent = msg || ""; n.className = "note" + (isErr ? " err" : "");
+  n.style.display = msg ? "" : "none";
+}
+
+async function readContract(){
+  const file = document.getElementById("contract-file").files[0];
+  const pasted = document.getElementById("contract-paste").value;
+  if (!file && !pasted.trim()){ contractStatus("Choose a contract file or paste its text first.", true); return; }
+  contractStatus("Reading contract…");
+  let got;
+  try { got = file ? await extractContract(file) : { text: pasted, form: null }; }
+  catch (e){ contractStatus(e.message || "Couldn't read that file.", true); return; }
+  const clean = redactPaymentData(got.text);
+  if (got.form && isContractForm(got.form)){
+    contractStatus("");
+    contractProposal = mapContractForm(got.form);
+    contractProposal.fromForm = true;
+    contractProposal.redacted = clean.removed;
+    contractProposal.text = clean.text;
+    if (!contractProposal.fields.some(f => (f.cell === "B6" || f.cell === "B7" || f.cell === "B25") && f.confidence !== "Auto")){
+      contractStatus("This contract's selection fields are blank. Fill in the contract first, then import it.", true);
+      return;
+    }
+    renderContractReview();
+    showContractStep("review");
+    return;
+  }
+  if (clean.text.replace(/\s/g, "").length < 40){
+    contractStatus("No readable text found — this is probably a scanned PDF. Open it, select all the text (or copy it from the original), and paste it in the box instead.", true);
+    return;
+  }
+  contractStatus("");
+  contractProposal = matchContract(clean.text);
+  contractProposal.redacted = clean.removed;
+  contractProposal.text = clean.text;
+  renderContractReview();
+  showContractStep("review");
+}
+
+function renderContractReview(){
+  const P = contractProposal, box = document.getElementById("contract-step-review");
+  box.innerHTML = "";
+  if (P.redacted) box.appendChild(el("div", "note warn", "Payment details were found and removed (" + P.redacted + "). They were never read into the form."));
+  if (P.fromForm) box.appendChild(el("div", "note", "Read from the contract's fill-in fields."));
+  const intro = el("p", "contract-intro", "Found " + P.fields.length + " selection" + (P.fields.length === 1 ? "" : "s") +
+    ". Untick anything that's wrong, then Apply. You can still change every field afterwards.");
+  box.appendChild(intro);
+  const t = el("table", "models contract-table");
+  const head = el("tr");
+  for (const h of ["", "Field", "Proposed value", "Confidence", "Found in contract"]) head.appendChild(el("th", null, h));
+  t.appendChild(head);
+  const row = (id, label, value, conf, snip) => {
+    const tr = el("tr", "conf-" + conf.toLowerCase());
+    const cb = el("input"); cb.type = "checkbox"; cb.checked = conf !== "Low" && conf !== "Check"; cb.dataset.id = id;
+    const td0 = el("td"); td0.appendChild(cb); tr.appendChild(td0);
+    tr.appendChild(el("td", null, label));
+    tr.appendChild(el("td", "model", value.trim()));
+    tr.appendChild(el("td", null, conf));
+    tr.appendChild(el("td", "src", snip));
+    t.appendChild(tr);
+  };
+  for (const j of P.job) row("job:" + j.key, j.label, j.value, "High", j.snippet);
+  for (const f of P.fields) row(f.cell, f.label + " (" + f.cell + ")", f.value, f.confidence, f.snippet);
+  box.appendChild(t);
+  if (P.notes && P.notes.length){
+    const ul = el("ul", "issues");
+    for (const n of P.notes) ul.appendChild(el("li", "warn", n));
+    box.appendChild(ul);
+  }
+  if (P.missing.length) box.appendChild(el("div", "note", "Not found — set by hand: " + P.missing.join(", ") + "."));
+  const opt = el("label", "contract-opt");
+  const clr = el("input"); clr.type = "checkbox"; clr.id = "contract-clear"; clr.checked = true;
+  opt.appendChild(clr); opt.appendChild(document.createTextNode(" Clear the current selections first"));
+  box.appendChild(opt);
+  const det = el("details", "contract-text");
+  det.appendChild(el("summary", null, "Show the text that was read from the contract"));
+  det.appendChild(el("pre", null, P.text));
+  box.appendChild(det);
+}
+
+function applyContract(){
+  const P = contractProposal; if (!P) return;
+  const on = new Set([...document.querySelectorAll("#contract-step-review input[type=checkbox][data-id]")].filter(c => c.checked).map(c => c.dataset.id));
+  if (document.getElementById("contract-clear").checked) resetForm();
+  for (const j of P.job) if (on.has("job:" + j.key)){
+    job[j.key] = j.value; els["job-" + j.key].value = j.value;
+  }
+  let siliconeSet = false;
+  for (const f of P.fields) if (on.has(f.cell)){ state[f.cell] = f.value; if (f.cell === "B55") siliconeSet = true; }
+  if (!siliconeSet && on.has("B10")){ const auto = siliconeForWallColor(state); if (auto) state.B55 = auto; }
+  refreshJobValidation();
+  refresh();
+  closeContractDialog();
+}
+
+function wireContractImport(){
+  document.getElementById("btn-contract").addEventListener("click", openContractDialog);
+  document.getElementById("contract-cancel").addEventListener("click", closeContractDialog);
+  document.getElementById("contract-read").addEventListener("click", readContract);
+  document.getElementById("contract-back").addEventListener("click", () => showContractStep("pick"));
+  document.getElementById("contract-apply").addEventListener("click", applyContract);
+  document.getElementById("contract-overlay").addEventListener("click", e => { if (e.target.id === "contract-overlay") closeContractDialog(); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && !document.getElementById("contract-overlay").hidden) closeContractDialog(); });
+}
+
 document.addEventListener("DOMContentLoaded", function(){
   buildJobFields();
   buildForm();
   refresh();
   document.getElementById("btn-export-pdf").addEventListener("click", exportCutSheetPdf);
   document.getElementById("btn-export-csv").addEventListener("click", exportModelListCsv);
+  wireContractImport();
   document.getElementById("btn-reset-qty").addEventListener("click", function(){
     if (qtyOverrides.size === 0) return;
     qtyOverrides.clear();
@@ -3714,7 +4810,9 @@ if (typeof module !== "undefined" && module.exports){
                      doorRodOptions, seatTopOptions, panDimensionOptions,
                      buildCutSheetPdfBook, buildCutSheetPdf, buildPdfFile, pdfWrap, pdfToBytes,
                      pdfTextWidth, PDF_WIDTHS, buildModelListCsv,
-                     applyQtyOverrides, qtyOverrides };
+                     applyQtyOverrides, qtyOverrides,
+                     extractPdfText, extractDocxText, redactPaymentData, matchContract,
+                     pdfOpen, pdfFormValues, isContractForm, mapContractForm };
 }
 </script>
 </body>
