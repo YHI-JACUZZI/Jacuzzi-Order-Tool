@@ -758,6 +758,9 @@ const CATALOG = [
 {"g": "Window Kits and Misc Wall Caps; Signature Window Kits", "m": "FX-WIN-SC", "d": "SC Window Kit", "len": null, "w": null, "c": 190.05},
 {"g": "Window Kits and Misc Wall Caps; Signature Window Kits", "m": "FX-WIN-SM", "d": "SM Window Kit", "len": null, "w": null, "c": 190.05},
 {"g": "Window Kits and Misc Wall Caps; Signature Window Kits", "m": "FX-WIN-WM", "d": "WM Window Kit", "len": null, "w": null, "c": 190.05},
+{"g": "Window Kits and Misc Wall Caps; Lifestyle Window Kits", "m": "WP552CT", "d": "CT Lifestyle Window Kit", "len": null, "w": null, "c": 331.8},
+{"g": "Window Kits and Misc Wall Caps; Lifestyle Window Kits", "m": "WP552ET", "d": "ET Lifestyle Window Kit", "len": null, "w": null, "c": 331.8},
+{"g": "Window Kits and Misc Wall Caps; Lifestyle Window Kits", "m": "WP552LA", "d": "LA Lifestyle Window Kit", "len": null, "w": null, "c": 331.8},
 {"g": "Shower Seats; White Fold Down Shower Seat", "m": "SS17959", "d": "WHT Fold Down Shower Seat", "len": null, "w": null, "c": 305.55},
 {"g": "Shower Seats; Hanging Teak Seat", "m": "FX-HANGST-BN", "d": "BN Hanging Teak Shower Seat", "len": null, "w": null, "c": 514.5},
 {"g": "Shower Seats; Hanging Teak Seat", "m": "FX-HANGST-CH", "d": "CH Hanging Teak Shower Seat", "len": null, "w": null, "c": 558.6},
@@ -1910,12 +1913,16 @@ function wallColorOptions(s){
   return [];
 }
 
+/** Config!BT2:BT4 — Lifestyle window kits (WP552xx) come in their own colours,
+ *  not the Lifestyle wall colours (2026-11-18, from the Jacuzzi portal). */
+const LIFE_WINDOW_KIT_COLORS = ["CT", "ET", "LA"];
+
 /** Config!AK2 — window kit colours. */
 function windowKitColorOptions(s){
   const wk = TRIM(s.B21).toLowerCase();
   if (wk === "" || wk === "no") return ["N/A"];
   if (EQ(s.B7, "Signature")) return CONFIG.Z_sigWallColors;
-  if (EQ(s.B7, "Lifestyle")) return CONFIG.AA_lifeWallColors;
+  if (EQ(s.B7, "Lifestyle")) return LIFE_WINDOW_KIT_COLORS;
   return ["N/A"];
 }
 
@@ -2545,10 +2552,13 @@ const LINE_ITEMS = [
   { row:20, label:"Window Kit", qty:(s, h, res) => res.models.length ? 1 : null,
     // 2026-09-28: now a real catalog lookup (the sheet added FX-WIN-* SKUs
     // under "Signature Window Kits") and only fires when Window Kit = Yes.
-    // Lifestyle colours have no window kit SKU, so they surface as No match,
-    // exactly like the live sheet.
+    // 2026-11-18: Lifestyle uses its own kits, WP552<color> under
+    // "Lifestyle Window Kits" (CT / ET / LA).
     models(s){
       if (!EQ(TRIM(s.B21), "Yes") || TRIM(s.B22) === "" || TRIM(s.B22) === "N/A") return BLANK;
+      if (EQ(TRIM(s.B7), "Lifestyle"))
+        return FILTER_CATALOG(it => SEARCH("Lifestyle Window Kits", it.g) &&
+                                    EQ(TRIM(it.m), "WP552" + TRIM(s.B22)));
       return FILTER_CATALOG(it => SEARCH("Signature Window Kits", it.g) &&
                                   EQ(TRIM(it.m), "FX-WIN-" + TRIM(s.B22)));
     } },
