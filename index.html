@@ -3200,7 +3200,7 @@ function money(n){ return "$" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",
    on-screen results table.
 
      * Export Cut Sheet (PDF)   → a real .pdf built by hand below.
-     * Export Model List (CSV) → Cost Item Name + Description + Quantity + Unit Cost, UTF-8 + BOM.
+     * Export Model List (CSV) → SKU + Name + Quantity + Comments (Stock Transfer Order Lines template), UTF-8 + BOM.
 
    The PDF writer is deliberately dependency-free (same philosophy as the
    Word writer it replaced): everything — page objects, the three core
@@ -3271,7 +3271,7 @@ function downloadBlob(blob, name){
 }
 
 /* ------------------------------------------------------------------------
-   J.2 — Export Model List (CSV): Cost Item Name + Description + Quantity + Unit Cost.
+   J.2 — Export Model List (CSV): SKU + Name + Quantity + Comments (Stock Transfer Order Lines).
    ------------------------------------------------------------------------ */
 
 function csvCell(v){
@@ -3280,14 +3280,23 @@ function csvCell(v){
 }
 function csvRow(arr){ return arr.map(csvCell).join(",") + "\r\n"; }
 
-/** Cost Item Name (SKU) + Description + Quantity + Unit Cost (catalog cost, plain number; blank when
- *  the catalog has none). Duplicate SKUs are already merged/summed by computeOutput(). */
+/** Matches the Stock Transfer Order Lines import template exactly:
+ *    SKU      = catalog SKU (model number)
+ *    Name     = catalog item description (falls back to the line's note when
+ *               the line isn't a catalog item, e.g. a custom pan)
+ *    Quantity = quantity (blank when there is none)
+ *    Comments = anything worth flagging on the line, otherwise empty.
+ *  Duplicate SKUs are already merged/summed by computeOutput(). */
 function buildModelListCsv(snap){
-  let csv = csvRow(["Cost Item Name", "Description", "Quantity", "Unit Cost"]);
+  let csv = csvRow(["SKU", "Name", "Quantity", "Comments"]);
   for (const r of snap.rows){
-    const unit = (r.item && typeof r.item.c === "number") ? r.item.c.toFixed(2) : "";
-    const desc = r.noMatch ? "Check the selections for this line item" : (r.item ? r.item.d : (r.note || ""));
-    csv += csvRow([r.model, desc, r.qty === null ? "" : r.qty, unit]);
+    const name = r.item ? r.item.d : (r.note || "");
+    const comments = [];
+    if (r.noMatch) comments.push("Check the selections for this line item");
+    if (r.item && r.note) comments.push(r.note);
+    if (r.overridden) comments.push("Qty manually changed (calculated: " +
+                                   (r.calculatedQty === null || r.calculatedQty === undefined ? "none" : r.calculatedQty) + ")");
+    csv += csvRow([r.model, name, r.qty === null || r.qty === undefined ? "" : r.qty, comments.join("; ")]);
   }
   return csv;
 }
