@@ -3290,6 +3290,12 @@ function csvRow(arr){ return arr.map(csvCell).join(",") + "\r\n"; }
 function buildModelListCsv(snap){
   let csv = csvRow(["SKU", "Name", "Quantity", "Comments"]);
   for (const r of snap.rows){
+    // The custom pan line gets its own stock-transfer SKU/Name in the CSV only
+    // (the on-screen table and PDF keep the Excel's "MUST ADD CUSTOM PAN" text).
+    if (r.model === CUSTOM_PAN_MSG){
+      csv += csvRow(["CST-PAN-SPECIAL ORDER!", "CUSTOM PAN", r.qty === null || r.qty === undefined ? "" : r.qty, ""]);
+      continue;
+    }
     const name = r.item ? r.item.d : (r.note || "");
     const comments = [];
     if (r.noMatch) comments.push("Check the selections for this line item");
